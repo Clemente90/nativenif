@@ -391,12 +391,147 @@ proc genStmt(n: var Cursor; ctx: var GenContext) =
   else:
     genInst(n, ctx)
 
+proc isNumericType(t: Type): bool =
+  ## Check if type is numeric (int, uint, float)
+  t.kind in {TypeKind.IntT, TypeKind.UIntT, TypeKind.FloatT}
+
+proc isIntegerType(t: Type): bool =
+  ## Check if type is an integer type (int or uint)
+  t.kind in {TypeKind.IntT, TypeKind.UIntT}
+
+proc isFloatType(t: Type): bool =
+  ## Check if type is a floating point type
+  t.kind == TypeKind.FloatT
+
+proc isPointerType(t: Type): bool =
+  ## Check if type is a pointer type (ptr or aptr)
+  t.kind in {TypeKind.PtrT, TypeKind.AptrT}
+
+proc canDoIntegerArithmetic(t: Type): bool =
+  ## Check if type supports integer arithmetic operations (add, sub)
+  ## Includes integer types and array pointers (for pointer arithmetic)
+  t.kind in {TypeKind.IntT, TypeKind.UIntT, TypeKind.AptrT}
+
+proc canDoBitwiseOps(t: Type): bool =
+  ## Check if type supports bitwise operations
+  t.kind in {TypeKind.IntT, TypeKind.UIntT}
+
 proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil): Operand =
   if n.kind == ParLe:
     let t = n.tag
     if rawTagIsNifasmReg(t):
       result.reg = parseRegister(n)
       result.typ = TypeInt64 # Explicit register usage is assumed to be Int64 compatible
+    elif t == DotTagId:
+      # (dot <base> <fieldname>)
+      inc n
+      var baseOp = parseOperand(n, ctx)
+      
+      if n.kind != Symbol and n.kind != SymbolDef:
+        error("Expected field name in dot expression", n)
+      let fieldName = getSym(n)
+      inc n
+      
+      # Type check: base must be a pointer to an object, or a stack variable with object type
+      var objType: Type
+      var baseReg: Register
+      var baseDisp: int32 = 0
+      
+      if baseOp.typ.kind == TypeKind.PtrT:
+        # Base is a pointer to an object
+        objType = baseOp.typ.base
+        if objType.kind != TypeKind.ObjectT:
+          error("Cannot access field of non-object type " & $objType, n)
+        baseReg = baseOp.reg
+      elif baseOp.isMem and baseOp.typ.kind == TypeKind.ObjectT:
+        # Base is a stack-allocated object
+        objType = baseOp.typ
+        baseReg = baseOp.mem.base
+        baseDisp = baseOp.mem.displacement
+      else:
+        error("dot requires pointer to object or stack object, got " & $baseOp.typ, n)
+      
+      # Find field in object type
+      var fieldOffset = 0
+      var fieldType: Type = nil
+      for (fname, ftype) in objType.fields:
+        if fname == fieldName:
+          fieldType = ftype
+          break
+        fieldOffset += sizeOf(ftype)
+      
+      if fieldType == nil:
+        error("Field '" & fieldName & "' not found in object type", n)
+      
+      # Result is memory operand pointing to the field
+      result.isMem = true
+      result.mem = MemoryOperand(
+        base: baseReg,
+        displacement: baseDisp + int32(fieldOffset),
+        hasIndex: false
+      )
+      result.typ = Type(kind: TypeKind.PtrT, base: fieldType)
+      
+      if n.kind != ParRi: error("Expected ) after dot expression", n)
+      inc n
+    elif t == AtTagId:
+      # (at <base> <index>)
+      inc n
+      var baseOp = parseOperand(n, ctx)
+      var indexOp = parseOperand(n, ctx)
+      
+      # Type check: index must be an integer
+      if not isIntegerType(indexOp.typ):
+        error("Array index must be integer type, got " & $indexOp.typ, n)
+      
+      # Type check: base must be aptr or stack array
+      var elemType: Type
+      var baseReg: Register
+      var baseDisp: int32 = 0
+      
+      if baseOp.typ.kind == TypeKind.AptrT:
+        # Base is an array pointer
+        elemType = baseOp.typ.base
+        baseReg = baseOp.reg
+      elif baseOp.isMem and baseOp.typ.kind == TypeKind.ArrayT:
+        # Base is a stack-allocated array
+        elemType = baseOp.typ.elem
+        baseReg = baseOp.mem.base
+        baseDisp = baseOp.mem.displacement
+      else:
+        error("at requires aptr or stack array, got " & $baseOp.typ, n)
+      
+      # Check if index is immediate or register
+      if indexOp.isImm:
+        # Immediate index: compute offset directly
+        let offset = indexOp.immVal * sizeOf(elemType)
+        result.isMem = true
+        result.mem = MemoryOperand(
+          base: baseReg,
+          displacement: baseDisp + int32(offset),
+          hasIndex: false
+        )
+      elif indexOp.isMem:
+        error("Array index cannot be memory operand", n)
+      else:
+        # Register index: use scaled indexing
+        let elemSize = sizeOf(elemType)
+        if elemSize notin [1, 2, 4, 8]:
+          error("Element size " & $elemSize & " not supported for scaled indexing (must be 1, 2, 4, or 8)", n)
+        
+        result.isMem = true
+        result.mem = MemoryOperand(
+          base: baseReg,
+          index: indexOp.reg,
+          scale: elemSize,
+          displacement: baseDisp,
+          hasIndex: true
+        )
+      
+      result.typ = Type(kind: TypeKind.PtrT, base: elemType)
+      
+      if n.kind != ParRi: error("Expected ) after at expression", n)
+      inc n
     elif t == LabTagId:
       inc n
       if n.kind != Symbol: error("Expected label usage", n)
@@ -418,6 +553,93 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       op.typ = castType
       result = op
       if n.kind != ParRi: error("Expected ) after cast", n)
+      inc n
+    elif t == MemTagId:
+      # (mem <address-expr>) or (mem <base> <offset>) or (mem <base> <index> <scale>) etc
+      inc n
+      
+      # Check if first child is an address expression (dot/at) or explicit addressing
+      if n.kind == ParLe and (n.tag == DotTagId or n.tag == AtTagId):
+        # Wrapped address expression: (mem (dot ...) or (mem (at ...))
+        var addrOp = parseOperand(n, ctx)
+        if not addrOp.isMem:
+          error("mem requires address expression", n)
+        
+        # Dereference the pointer type
+        if addrOp.typ.kind != TypeKind.PtrT:
+          error("mem requires pointer type, got " & $addrOp.typ, n)
+        
+        result = addrOp
+        result.typ = addrOp.typ.base  # Dereference: ptr T -> T
+      else:
+        # Explicit addressing: (mem base) or (mem base offset) or (mem base index scale [offset])
+        var baseOp = parseOperand(n, ctx)
+        if baseOp.isImm or baseOp.isMem:
+          error("mem base must be a register", n)
+        
+        var displacement: int32 = 0
+        var hasIndex = false
+        var indexReg: Register = RAX
+        var scale: int = 1
+        
+        # Check for offset
+        if n.kind == IntLit or n.kind == Symbol:
+          if n.kind == IntLit:
+            displacement = int32(getInt(n))
+            inc n
+          elif n.kind == Symbol:
+            # Could be index register
+            let indexName = getSym(n)
+            let indexSym = ctx.scope.lookup(indexName)
+            if indexSym != nil and indexSym.kind == skVar and indexSym.reg != InvalidTagId:
+              # This is the index register
+              hasIndex = true
+              indexReg = case indexSym.reg
+                of RaxTagId, R0TagId: RAX
+                of RcxTagId, R2TagId: RCX
+                of RdxTagId, R3TagId: RDX
+                of RbxTagId, R1TagId: RBX
+                of RspTagId, R7TagId: RSP
+                of RbpTagId, R6TagId: RBP
+                of RsiTagId, R4TagId: RSI
+                of RdiTagId, R5TagId: RDI
+                of R8TagId: R8
+                of R9TagId: R9
+                of R10TagId: R10
+                of R11TagId: R11
+                of R12TagId: R12
+                of R13TagId: R13
+                of R14TagId: R14
+                of R15TagId: R15
+                else: RAX
+              inc n
+              
+              # Check for scale
+              if n.kind == IntLit:
+                scale = int(getInt(n))
+                if scale notin [1, 2, 4, 8]:
+                  error("mem scale must be 1, 2, 4, or 8", n)
+                inc n
+                
+                # Check for displacement after scale
+                if n.kind == IntLit:
+                  displacement = int32(getInt(n))
+                  inc n
+            else:
+              error("Expected index register or offset in mem", n)
+        
+        result.isMem = true
+        result.mem = MemoryOperand(
+          base: baseOp.reg,
+          index: indexReg,
+          scale: scale,
+          displacement: displacement,
+          hasIndex: hasIndex
+        )
+        # Type is unknown for explicit addressing
+        result.typ = TypeInt64  # Default assumption
+      
+      if n.kind != ParRi: error("Expected ) after mem", n)
       inc n
     elif t == SsizeTagId:
       result.isSsize = true
@@ -549,31 +771,6 @@ proc parseDest(n: var Cursor; ctx: var GenContext): Operand =
 proc checkType(want, got: Type; n: Cursor) =
   if not compatible(want, got):
     typeError(want, got, n)
-
-proc isNumericType(t: Type): bool =
-  ## Check if type is numeric (int, uint, float)
-  t.kind in {TypeKind.IntT, TypeKind.UIntT, TypeKind.FloatT}
-
-proc isIntegerType(t: Type): bool =
-  ## Check if type is an integer type (int or uint)
-  t.kind in {TypeKind.IntT, TypeKind.UIntT}
-
-proc isFloatType(t: Type): bool =
-  ## Check if type is a floating point type
-  t.kind == TypeKind.FloatT
-
-proc isPointerType(t: Type): bool =
-  ## Check if type is a pointer type (ptr or aptr)
-  t.kind in {TypeKind.PtrT, TypeKind.AptrT}
-
-proc canDoIntegerArithmetic(t: Type): bool =
-  ## Check if type supports integer arithmetic operations (add, sub)
-  ## Includes integer types and array pointers (for pointer arithmetic)
-  t.kind in {TypeKind.IntT, TypeKind.UIntT, TypeKind.AptrT}
-
-proc canDoBitwiseOps(t: Type): bool =
-  ## Check if type supports bitwise operations
-  t.kind in {TypeKind.IntT, TypeKind.UIntT}
 
 proc checkIntegerArithmetic(t: Type; op: string; n: Cursor) =
   if not canDoIntegerArithmetic(t):
