@@ -7,7 +7,7 @@ proc toNimName(s: string; suffix: string): string =
 
 type
   EnumList = enum
-    NifasmInst, NifasmType, NifasmDecl, NifasmExpr, NifasmOther
+    NifasmInst, NifasmType, NifasmDecl, NifasmExpr, NifasmOther, NifasmReg
 
 proc toSuffix(e: EnumList): (string, string) =
   case e
@@ -16,6 +16,7 @@ proc toSuffix(e: EnumList): (string, string) =
   of NifasmDecl: ("D", "NoDecl")
   of NifasmExpr: ("X", "NoExpr")
   of NifasmOther: ("O", "NoOther")
+  of NifasmReg: ("R", "NoReg")
 
 proc shortcutToEnumList(shortcut: string): EnumList =
   try:
@@ -144,7 +145,7 @@ proc genTags(inp: File) =
   # or I can generate the model file if I decide to use it. 
   # Let's generate the model file too, it's useful.
   
-  writeModel "src/nifasm/model.nim", enumDecls, NifasmInst, NifasmOther
+  writeModel "src/nifasm/model.nim", enumDecls, NifasmInst, NifasmReg
 
 proc main =
   var inp = open("doc/tags.md", fmRead)

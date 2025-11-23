@@ -123,15 +123,73 @@ type
     DotX = (ord(DotTagId), "dot")  ## field access
     AtX = (ord(AtTagId), "at")  ## array index
     MemX = (ord(MemTagId), "mem")  ## memory reference
+    CastX = (ord(CastTagId), "cast")  ## type cast
 
 proc rawTagIsNifasmExpr*(raw: TagEnum): bool {.inline.} =
-  raw in {SsizeTagId, DotTagId, AtTagId, MemTagId}
+  raw in {SsizeTagId, DotTagId, AtTagId, MemTagId, CastTagId}
 
 type
   NifasmOther* = enum
     NoOther
     SO = (ord(STagId), "s")  ## stack slot location tag
+    OfO = (ord(OfTagId), "of")  ## overflow flag
+    NoO = (ord(NoTagId), "no")  ## no overflow flag
+    ZfO = (ord(ZfTagId), "zf")  ## zero flag
+    NzO = (ord(NzTagId), "nz")  ## not zero flag
+    SfO = (ord(SfTagId), "sf")  ## sign flag
+    NsO = (ord(NsTagId), "ns")  ## not sign flag
+    CfO = (ord(CfTagId), "cf")  ## carry flag
+    NcO = (ord(NcTagId), "nc")  ## not carry flag
+    PfO = (ord(PfTagId), "pf")  ## parity flag
+    NpO = (ord(NpTagId), "np")  ## not parity flag
 
 proc rawTagIsNifasmOther*(raw: TagEnum): bool {.inline.} =
-  raw >= STagId and raw <= STagId
+  raw in {STagId, OfTagId, NoTagId, ZfTagId, NzTagId, SfTagId, NsTagId, CfTagId, NcTagId, PfTagId, NpTagId}
+
+type
+  NifasmReg* = enum
+    NoReg
+    RaxR = (ord(RaxTagId), "rax")  ## register rax
+    RbxR = (ord(RbxTagId), "rbx")  ## register rbx
+    RcxR = (ord(RcxTagId), "rcx")  ## register rcx
+    RdxR = (ord(RdxTagId), "rdx")  ## register rdx
+    RsiR = (ord(RsiTagId), "rsi")  ## register rsi
+    RdiR = (ord(RdiTagId), "rdi")  ## register rdi
+    RbpR = (ord(RbpTagId), "rbp")  ## register rbp
+    RspR = (ord(RspTagId), "rsp")  ## register rsp
+    R8R = (ord(R8TagId), "r8")  ## register r8
+    R9R = (ord(R9TagId), "r9")  ## register r9
+    R10R = (ord(R10TagId), "r10")  ## register r10
+    R11R = (ord(R11TagId), "r11")  ## register r11
+    R12R = (ord(R12TagId), "r12")  ## register r12
+    R13R = (ord(R13TagId), "r13")  ## register r13
+    R14R = (ord(R14TagId), "r14")  ## register r14
+    R15R = (ord(R15TagId), "r15")  ## register r15
+    R0R = (ord(R0TagId), "r0")  ## register r0 (alias)
+    R1R = (ord(R1TagId), "r1")  ## register r1 (alias)
+    R2R = (ord(R2TagId), "r2")  ## register r2 (alias)
+    R3R = (ord(R3TagId), "r3")  ## register r3 (alias)
+    R4R = (ord(R4TagId), "r4")  ## register r4 (alias)
+    R5R = (ord(R5TagId), "r5")  ## register r5 (alias)
+    R6R = (ord(R6TagId), "r6")  ## register r6 (alias)
+    R7R = (ord(R7TagId), "r7")  ## register r7 (alias)
+    Xmm0R = (ord(Xmm0TagId), "xmm0")  ## register xmm0
+    Xmm1R = (ord(Xmm1TagId), "xmm1")  ## register xmm1
+    Xmm2R = (ord(Xmm2TagId), "xmm2")  ## register xmm2
+    Xmm3R = (ord(Xmm3TagId), "xmm3")  ## register xmm3
+    Xmm4R = (ord(Xmm4TagId), "xmm4")  ## register xmm4
+    Xmm5R = (ord(Xmm5TagId), "xmm5")  ## register xmm5
+    Xmm6R = (ord(Xmm6TagId), "xmm6")  ## register xmm6
+    Xmm7R = (ord(Xmm7TagId), "xmm7")  ## register xmm7
+    Xmm8R = (ord(Xmm8TagId), "xmm8")  ## register xmm8
+    Xmm9R = (ord(Xmm9TagId), "xmm9")  ## register xmm9
+    Xmm10R = (ord(Xmm10TagId), "xmm10")  ## register xmm10
+    Xmm11R = (ord(Xmm11TagId), "xmm11")  ## register xmm11
+    Xmm12R = (ord(Xmm12TagId), "xmm12")  ## register xmm12
+    Xmm13R = (ord(Xmm13TagId), "xmm13")  ## register xmm13
+    Xmm14R = (ord(Xmm14TagId), "xmm14")  ## register xmm14
+    Xmm15R = (ord(Xmm15TagId), "xmm15")  ## register xmm15
+
+proc rawTagIsNifasmReg*(raw: TagEnum): bool {.inline.} =
+  raw >= RaxTagId and raw <= Xmm15TagId
 

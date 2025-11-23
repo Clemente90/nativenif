@@ -42,7 +42,8 @@ type
 
   # Types of instructions requiring relocation/patching
   RelocKind* = enum
-    rkCall, rkJmp, rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe, rkLea
+    rkCall, rkJmp, rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe, 
+    rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp, rkLea
 
   # Buffer for accumulating instruction bytes
   Buffer* = object
@@ -1358,6 +1359,54 @@ proc emitJbe*(dest: var Buffer; target: LabelId) =
   dest.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJbe, 6)  # 2 bytes opcode + 4 bytes displacement
 
+proc emitJo*(dest: var Buffer; target: LabelId) =
+  ## Emit JO instruction: JO target (jump if overflow)
+  let pos = dest.getCurrentPosition()
+  dest.add(0x0F)
+  dest.add(0x80)
+  dest.addt32(0)  # Placeholder
+  dest.addReloc(pos, target, rkJo, 6)
+
+proc emitJno*(dest: var Buffer; target: LabelId) =
+  ## Emit JNO instruction: JNO target (jump if not overflow)
+  let pos = dest.getCurrentPosition()
+  dest.add(0x0F)
+  dest.add(0x81)
+  dest.addt32(0)  # Placeholder
+  dest.addReloc(pos, target, rkJno, 6)
+
+proc emitJs*(dest: var Buffer; target: LabelId) =
+  ## Emit JS instruction: JS target (jump if sign)
+  let pos = dest.getCurrentPosition()
+  dest.add(0x0F)
+  dest.add(0x88)
+  dest.addt32(0)  # Placeholder
+  dest.addReloc(pos, target, rkJs, 6)
+
+proc emitJns*(dest: var Buffer; target: LabelId) =
+  ## Emit JNS instruction: JNS target (jump if not sign)
+  let pos = dest.getCurrentPosition()
+  dest.add(0x0F)
+  dest.add(0x89)
+  dest.addt32(0)  # Placeholder
+  dest.addReloc(pos, target, rkJns, 6)
+
+proc emitJp*(dest: var Buffer; target: LabelId) =
+  ## Emit JP instruction: JP target (jump if parity)
+  let pos = dest.getCurrentPosition()
+  dest.add(0x0F)
+  dest.add(0x8A)
+  dest.addt32(0)  # Placeholder
+  dest.addReloc(pos, target, rkJp, 6)
+
+proc emitJnp*(dest: var Buffer; target: LabelId) =
+  ## Emit JNP instruction: JNP target (jump if not parity)
+  let pos = dest.getCurrentPosition()
+  dest.add(0x0F)
+  dest.add(0x8B)
+  dest.addt32(0)  # Placeholder
+  dest.addReloc(pos, target, rkJnp, 6)
+
 proc emitJmpReg*(dest: var Buffer; reg: Register) =
   ## Emit JMP instruction: JMP reg (indirect jump)
   var rex = RexPrefix()
@@ -1611,6 +1660,12 @@ proc optimizeJumps*(buf: Buffer): Buffer =
               of rkJb: 0x72
               of rkJae: 0x73
               of rkJbe: 0x76
+              of rkJo: 0x70
+              of rkJno: 0x71
+              of rkJs: 0x78
+              of rkJns: 0x79
+              of rkJp: 0x7A
+              of rkJnp: 0x7B
               else: 0x74  # Default to JE
 
             newBuf.data.add(byte(shortOpcode))
@@ -1645,6 +1700,12 @@ proc optimizeJumps*(buf: Buffer): Buffer =
               of rkJb: 0x82
               of rkJae: 0x83
               of rkJbe: 0x86
+              of rkJo: 0x80
+              of rkJno: 0x81
+              of rkJs: 0x88
+              of rkJns: 0x89
+              of rkJp: 0x8A
+              of rkJnp: 0x8B
               else: 0x84  # Default to JE
             newBuf.data.add(byte(longOpcode))
             newBuf.addt32(int32(distance))

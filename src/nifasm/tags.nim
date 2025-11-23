@@ -101,6 +101,57 @@ type
     AtTagId
     MemTagId
     RodataTagId
+    CastTagId
+    RaxTagId
+    RbxTagId
+    RcxTagId
+    RdxTagId
+    RsiTagId
+    RdiTagId
+    RbpTagId
+    RspTagId
+    R8TagId
+    R9TagId
+    R10TagId
+    R11TagId
+    R12TagId
+    R13TagId
+    R14TagId
+    R15TagId
+    R0TagId
+    R1TagId
+    R2TagId
+    R3TagId
+    R4TagId
+    R5TagId
+    R6TagId
+    R7TagId
+    Xmm0TagId
+    Xmm1TagId
+    Xmm2TagId
+    Xmm3TagId
+    Xmm4TagId
+    Xmm5TagId
+    Xmm6TagId
+    Xmm7TagId
+    Xmm8TagId
+    Xmm9TagId
+    Xmm10TagId
+    Xmm11TagId
+    Xmm12TagId
+    Xmm13TagId
+    Xmm14TagId
+    Xmm15TagId
+    OfTagId
+    NoTagId
+    ZfTagId
+    NzTagId
+    SfTagId
+    NsTagId
+    CfTagId
+    NcTagId
+    PfTagId
+    NpTagId
 const
   TagData*: array[TagEnum, (string, int)] = [
     ("InvalidTagId", 0),
@@ -201,5 +252,56 @@ const
     ("dot", 95),
     ("at", 96),
     ("mem", 97),
-    ("rodata", 98)
+    ("rodata", 98),
+    ("cast", 100),
+    ("rax", 101),
+    ("rbx", 102),
+    ("rcx", 103),
+    ("rdx", 104),
+    ("rsi", 105),
+    ("rdi", 106),
+    ("rbp", 107),
+    ("rsp", 108),
+    ("r8", 109),
+    ("r9", 110),
+    ("r10", 111),
+    ("r11", 112),
+    ("r12", 113),
+    ("r13", 114),
+    ("r14", 115),
+    ("r15", 116),
+    ("r0", 117),
+    ("r1", 118),
+    ("r2", 119),
+    ("r3", 120),
+    ("r4", 121),
+    ("r5", 122),
+    ("r6", 123),
+    ("r7", 124),
+    ("xmm0", 125),
+    ("xmm1", 126),
+    ("xmm2", 127),
+    ("xmm3", 128),
+    ("xmm4", 129),
+    ("xmm5", 130),
+    ("xmm6", 131),
+    ("xmm7", 132),
+    ("xmm8", 133),
+    ("xmm9", 134),
+    ("xmm10", 135),
+    ("xmm11", 136),
+    ("xmm12", 137),
+    ("xmm13", 138),
+    ("xmm14", 139),
+    ("xmm15", 140),
+    ("of", 141),
+    ("no", 142),
+    ("zf", 143),
+    ("nz", 144),
+    ("sf", 145),
+    ("ns", 146),
+    ("cf", 147),
+    ("nc", 148),
+    ("pf", 149),
+    ("np", 150)
   ]

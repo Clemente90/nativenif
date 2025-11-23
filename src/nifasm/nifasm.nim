@@ -1,8 +1,9 @@
 
-import std / [parseopt, strutils, os, tables, assertions, streams]
-import "../../../nimony/src/lib" / [nifreader, stringviews]
-import tags
+import std / [parseopt, strutils, os, assertions, streams]
+import "../../../nimony/src/lib" / [nifreader, nifstreams, nifcursors, bitabs, lineinfos]
+import tags, model
 import x86, elf
+import sem
 
 const
   Version = "0.1.0"
@@ -19,302 +20,486 @@ Options:
   --version, -v             show version
 """
 
+proc tag(n: Cursor): TagEnum = cast[TagEnum](n.tagId)
+
+proc infoStr(n: Cursor): string =
+  if n.info.isValid:
+    let raw = unpack(pool.man, n.info)
+    result = pool.files[raw.file] & "(" & $raw.line & ", " & $raw.col & ")"
+  else:
+    result = "???"
+
+proc error(msg: string; n: Cursor) =
+  quit "[Error] " & msg & " at " & infoStr(n)
+
+proc getInt(n: Cursor): int64 =
+  if n.kind == IntLit:
+    result = pool.integers[n.intId]
+  else:
+    error("Expected integer literal", n)
+
+proc getSym(n: Cursor): string =
+  if n.kind in {Symbol, SymbolDef}:
+    result = pool.syms[n.symId]
+  else:
+    error("Expected symbol", n)
+
+proc getStr(n: Cursor): string =
+  if n.kind == StringLit:
+    result = pool.strings[n.litId]
+  else:
+    error("Expected string literal", n)
+
+proc parseRegister(n: var Cursor): Register =
+  let t = n.tag
+  result = case t
+    of RaxTagId, R0TagId: RAX
+    of RcxTagId, R2TagId: RCX
+    of RdxTagId, R3TagId: RDX
+    of RbxTagId, R1TagId: RBX
+    of RspTagId, R7TagId: RSP
+    of RbpTagId, R6TagId: RBP
+    of RsiTagId, R4TagId: RSI
+    of RdiTagId, R5TagId: RDI
+    of R8TagId: R8
+    of R9TagId: R9
+    of R10TagId: R10
+    of R11TagId: R11
+    of R12TagId: R12
+    of R13TagId: R13
+    of R14TagId: R14
+    of R15TagId: R15
+    else:
+      error("Expected register, got: " & $t, n)
+      RAX
+  inc n
+  if n.kind != ParRi: error("Expected ) after register", n)
+  inc n
+
+proc parseType(n: var Cursor; scope: Scope): Type =
+  if n.kind == Symbol:
+    let name = getSym(n)
+    let sym = scope.lookup(name)
+    if sym == nil or sym.kind != skType:
+      error("Unknown type: " & name, n)
+    result = sym.typ
+    inc n
+  elif n.kind == ParLe:
+    let t = n.tag
+    inc n
+    case t
+    of BoolTagId:
+      result = TypeBool
+    of ITagId:
+      result = Type(kind: IntT, bits: int(getInt(n)))
+      inc n
+    of UTagId:
+      result = Type(kind: UIntT, bits: int(getInt(n)))
+      inc n
+    of FTagId:
+      result = Type(kind: FloatT, bits: int(getInt(n)))
+      inc n
+    of PtrTagId:
+      let base = parseType(n, scope)
+      result = Type(kind: PtrT, base: base)
+    of AptrTagId:
+      let base = parseType(n, scope)
+      result = Type(kind: AptrT, base: base)
+    of ArrayTagId:
+      let elem = parseType(n, scope)
+      let len = getInt(n)
+      inc n
+      result = Type(kind: ArrayT, elem: elem, len: len)
+    else:
+      error("Unknown type tag: " & $t, n)
+    if n.kind != ParRi: error("Expected )", n)
+    inc n
+  else:
+    error("Expected type", n)
+
+proc parseObjectBody(n: var Cursor; scope: Scope): Type =
+  var fields: seq[(string, Type)] = @[]
+  var offset = 0
+  inc n 
+  while n.kind != ParRi:
+    if n.kind == ParLe and n.tag == FldTagId:
+      inc n
+      if n.kind != SymbolDef: error("Expected field name", n)
+      let name = getSym(n)
+      inc n
+      let ftype = parseType(n, scope)
+      fields.add (name, ftype)
+      let size = sizeOf(ftype)
+      offset += size
+      if n.kind != ParRi: error("Expected )", n)
+      inc n
+    else:
+      error("Expected field definition", n)
+  inc n
+  result = Type(kind: ObjectT, fields: fields, size: offset)
+
+proc pass1(n: var Cursor; scope: Scope) =
+  var n = n
+  if n.kind == ParLe and n.tag == StmtsTagId:
+    inc n
+    while n.kind != ParRi:
+      if n.kind == ParLe:
+        let start = n
+        case n.tag
+        of TypeTagId:
+          inc n
+          if n.kind != SymbolDef: error("Expected type name", n)
+          let name = getSym(n)
+          inc n
+          if n.kind == ParLe and n.tag == ObjectTagId:
+            let typ = parseObjectBody(n, scope)
+            scope.define(Symbol(name: name, kind: skType, typ: typ))
+          else:
+            let typ = parseType(n, scope)
+            scope.define(Symbol(name: name, kind: skType, typ: typ))
+          if n.kind != ParRi: error("Expected ) at end of type decl", n)
+          inc n
+        of ProcTagId:
+          inc n
+          if n.kind != SymbolDef: error("Expected proc name", n)
+          let name = getSym(n)
+          scope.define(Symbol(name: name, kind: skProc))
+          n = start
+          skip n
+        of RodataTagId:
+          inc n
+          if n.kind != SymbolDef: error("Expected rodata name", n)
+          let name = getSym(n)
+          scope.define(Symbol(name: name, kind: skRodata))
+          n = start
+          skip n
+        else:
+          skip n
+      else:
+        skip n
+    inc n
+
 type
-  Assembler = object
-    r: Reader
-    filename: string
-    outfile: string
-    tagMap: Table[string, TagEnum]
+  GenContext = object
+    scope: Scope
     buf: Buffer
-    labelMap: Table[string, LabelId]
-    regMap: Table[string, Register]
-    
-proc initAssembler(filename: string; outfile: string): Assembler =
-  result = Assembler(
-    r: nifreader.open(filename), 
-    filename: filename, 
-    outfile: outfile,
-    tagMap: initTable[string, TagEnum](),
-    buf: initBuffer(),
-    labelMap: initTable[string, LabelId](),
-    regMap: initTable[string, Register]()
-  )
-  for t in TagEnum:
-    if t != InvalidTagId:
-      let (name, _) = TagData[t]
-      result.tagMap[name] = t
+    procName: string
+
+proc genInst(n: var Cursor; ctx: var GenContext)
+
+proc genStmt(n: var Cursor; ctx: var GenContext) =
+  if n.kind == ParLe and n.tag == StmtsTagId:
+    inc n
+    while n.kind != ParRi:
+      genInst(n, ctx)
+    inc n
+  else:
+    genInst(n, ctx)
+
+proc genExpr(n: var Cursor; ctx: var GenContext): (Register, Type) =
+  if n.kind == ParLe:
+    let t = n.tag
+    if t == CastTagId:
+      inc n
+      let targetType = parseType(n, ctx.scope)
+      let (reg, _) = genExpr(n, ctx)
+      if n.kind != ParRi: error("Expected ) after cast", n)
+      inc n
+      return (reg, targetType)
+    elif rawTagIsNifasmReg(t):
+      let reg = parseRegister(n)
+      return (reg, TypeInt64)
+    else:
+      error("Unsupported expression: " & $t, n)
+      return (RAX, TypeVoid)
+  elif n.kind == IntLit:
+    error("Immediate not supported here", n)
+    return (RAX, TypeVoid)
+  else:
+    error("Unexpected expression", n)
+    return (RAX, TypeVoid)
+
+proc parseOperand(n: var Cursor; ctx: var GenContext): (Register, bool, int64, LabelId) =
+  if n.kind == ParLe:
+    let t = n.tag
+    if rawTagIsNifasmReg(t):
+      return (parseRegister(n), false, 0, LabelId(0))
+    elif t == LabTagId:
+      inc n
+      if n.kind != Symbol: error("Expected label usage", n)
+      let name = getSym(n)
+      let sym = ctx.scope.lookup(name)
+      if sym == nil or sym.kind != skLabel: error("Unknown label: " & name, n)
+      inc n
+      if n.kind != ParRi: error("Expected )", n)
+      inc n
+      return (RAX, false, 0, LabelId(sym.offset))
+    elif t == CastTagId:
+      inc n
+      let _ = parseType(n, ctx.scope)
+      let res = parseOperand(n, ctx)
+      if n.kind != ParRi: error("Expected ) after cast", n)
+      inc n
+      return res
+    else:
+      error("Unexpected operand tag: " & $t, n)
+      return (RAX, false, 0, LabelId(0))
+  elif n.kind == IntLit:
+    let val = getInt(n)
+    inc n
+    return (RAX, true, val, LabelId(0))
+  elif n.kind == Symbol:
+    let name = getSym(n)
+    let sym = ctx.scope.lookup(name)
+    if sym != nil and sym.kind == skVar and sym.reg != InvalidTagId:
+      let reg = case sym.reg
+        of RaxTagId, R0TagId: RAX
+        of RcxTagId, R2TagId: RCX
+        of RdxTagId, R3TagId: RDX
+        of RbxTagId, R1TagId: RBX
+        of RspTagId, R7TagId: RSP
+        of RbpTagId, R6TagId: RBP
+        of RsiTagId, R4TagId: RSI
+        of RdiTagId, R5TagId: RDI
+        of R8TagId: R8
+        of R9TagId: R9
+        of R10TagId: R10
+        of R11TagId: R11
+        of R12TagId: R12
+        of R13TagId: R13
+        of R14TagId: R14
+        of R15TagId: R15
+        else: RAX
+      inc n
+      return (reg, false, 0, LabelId(0))
+    elif sym != nil and sym.kind == skLabel:
+      inc n
+      return (RAX, false, 0, LabelId(sym.offset))
+    elif sym != nil and sym.kind == skRodata:
+      inc n
+      return (RAX, false, 0, LabelId(sym.offset))
+    else:
+      error("Unknown or invalid symbol: " & name, n)
+      return (RAX, false, 0, LabelId(0))
+  else:
+    error("Unexpected operand kind", n)
+    return (RAX, false, 0, LabelId(0))
+
+proc genInst(n: var Cursor; ctx: var GenContext) =
+  if n.kind != ParLe: error("Expected instruction", n)
+  let tag = n.tag
   
-  # Initialize register map
-  result.regMap["rax"] = RAX
-  result.regMap["rcx"] = RCX
-  result.regMap["rdx"] = RDX
-  result.regMap["rbx"] = RBX
-  result.regMap["rsp"] = RSP
-  result.regMap["rbp"] = RBP
-  result.regMap["rsi"] = RSI
-  result.regMap["rdi"] = RDI
-  result.regMap["r8"] = R8
-  result.regMap["r9"] = R9
-  result.regMap["r10"] = R10
-  result.regMap["r11"] = R11
-  result.regMap["r12"] = R12
-  result.regMap["r13"] = R13
-  result.regMap["r14"] = R14
-  result.regMap["r15"] = R15
+  if tag == IteTagId:
+    inc n
+    if n.kind != ParLe: error("Expected condition", n)
+    let condTag = n.tag
+    inc n
+    if n.kind != ParRi: error("Expected ) after cond", n)
+    inc n
+    
+    let lElse = ctx.buf.createLabel()
+    let lEnd = ctx.buf.createLabel()
+    
+    case condTag
+    of OfTagId: ctx.buf.emitJno(lElse)
+    of NoTagId: ctx.buf.emitJo(lElse)
+    of ZfTagId: ctx.buf.emitJne(lElse) # Jne = Jnz
+    of NzTagId: ctx.buf.emitJe(lElse)  # Je = Jz
+    of SfTagId: ctx.buf.emitJns(lElse)
+    of NsTagId: ctx.buf.emitJs(lElse)
+    of CfTagId: ctx.buf.emitJae(lElse) # Jnc = Jae
+    of NcTagId: ctx.buf.emitJb(lElse) # Jc = Jb
+    of PfTagId: ctx.buf.emitJnp(lElse)
+    of NpTagId: ctx.buf.emitJp(lElse)
+    else: error("Unsupported condition: " & $condTag, n)
+    
+    genStmt(n, ctx)
+    ctx.buf.emitJmp(lEnd)
+    ctx.buf.defineLabel(lElse)
+    genStmt(n, ctx)
+    ctx.buf.defineLabel(lEnd)
+    
+    if n.kind != ParRi: error("Expected ) after ite", n)
+    inc n
+    return
 
-proc close(a: var Assembler) =
-  a.r.close()
+  if tag == LoopTagId:
+    inc n
+    genStmt(n, ctx)
+    let lStart = ctx.buf.createLabel()
+    let lEnd = ctx.buf.createLabel()
+    
+    ctx.buf.defineLabel(lStart)
+    if n.kind != ParLe: error("Expected condition", n)
+    let condTag = n.tag
+    inc n
+    if n.kind != ParRi: error("Expected ) after cond", n)
+    inc n
+    
+    case condTag
+    of ZfTagId: ctx.buf.emitJne(lEnd) # exit if not zero (assuming zf means continue if zero)
+    of NzTagId: ctx.buf.emitJe(lEnd)
+    else: error("Unsupported loop condition: " & $condTag, n)
+    
+    genStmt(n, ctx)
+    ctx.buf.emitJmp(lStart)
+    ctx.buf.defineLabel(lEnd)
+    
+    if n.kind != ParRi: error("Expected ) after loop", n)
+    inc n
+    return
 
-proc parseTag(a: var Assembler; t: Token): TagEnum =
-  if t.tk == ParLe:
-    let name = $t.s
-    result = a.tagMap.getOrDefault(name, InvalidTagId)
-  else:
-    result = InvalidTagId
-
-proc getLabel(a: var Assembler; name: string): LabelId =
-  if name notin a.labelMap:
-    a.labelMap[name] = a.buf.createLabel()
-  result = a.labelMap[name]
-
-proc parseReg(a: var Assembler): Register =
-  let t = next(a.r)
-  # We expect (rax) or just rax?
-  # The doc says (rax).
-  if t.tk == ParLe:
-    let name = $t.s
-    if name in a.regMap:
-      result = a.regMap[name]
-      # consume ParRi
-      let endT = next(a.r)
-      assert endT.tk == ParRi
-    else:
-      # Could be (s) or other things?
-      quit "Expected register, got: " & name
-  elif t.tk == Ident or t.tk == Symbol:
-    let name = $t.s
-    if name in a.regMap:
-      result = a.regMap[name]
-    else:
-      quit "Expected register, got: " & name
-  else:
-    quit "Expected register token"
-
-proc compileStmt(a: var Assembler; tag: TagEnum)
-
-proc process(a: var Assembler) =
-  while true:
-    let t = next(a.r)
-    if t.tk == EofToken: break
-    if t.tk == ParLe:
-      let tag = a.parseTag(t)
-      if tag != InvalidTagId:
-        a.compileStmt(tag)
+  if tag == VarTagId:
+    inc n
+    if n.kind != SymbolDef: error("Expected var name", n)
+    let name = getSym(n)
+    inc n
+    var reg = InvalidTagId
+    if n.kind == ParLe:
+      let locTag = n.tag
+      if rawTagIsNifasmReg(locTag):
+        reg = locTag
+        inc n
+        if n.kind != ParRi: error("Expected )", n)
+        inc n
       else:
-        echo "Warning: Invalid tag at top level: ", t.s
+        inc n
+        if n.kind != ParRi: error("Expected )", n)
+        inc n
+    else:
+      error("Expected location", n)
+    let typ = parseType(n, ctx.scope)
+    ctx.scope.define(Symbol(name: name, kind: skVar, typ: typ, reg: reg))
+    if n.kind != ParRi: error("Expected )", n)
+    inc n
+    return
 
-proc compileStmt(a: var Assembler; tag: TagEnum) =
+  inc n
   case tag
-  of StmtsTagId:
-    while true:
-      let t = next(a.r)
-      if t.tk == ParRi: break
-      if t.tk == ParLe:
-        let subTag = a.parseTag(t)
-        a.compileStmt(subTag)
-  of SyscallTagId:
-    a.buf.emitSyscall()
-    let endT = next(a.r)
-    assert endT.tk == ParRi
-  of RetTagId:
-    # Instruction (ret)
-    a.buf.emitRet()
-    let endT = next(a.r)
-    assert endT.tk == ParRi
   of MovTagId:
-    # (mov dest src)
-    # dest is (rax)
-    # src is 60 or (rbx)
-    let destReg = a.parseReg()
-    
-    # Check src
-    # Peek next token?
-    # We need a way to peek or just parse and decide.
-    # Since nifreader advances, we have to consume.
-    
-    # We can use savePos and restore if needed, but let's try to determine by token type.
-    let pos = a.r.savePos()
-    let t = next(a.r)
-    if t.tk == IntLit:
-      # mov reg, imm
-      let imm = parseBiggestInt($t.s)
-      # check if 32 or 64
-      if imm >= low(int32) and imm <= high(int32):
-         a.buf.emitMovImmToReg32(destReg, int32(imm))
+    let dest = parseRegister(n)
+    let (srcReg, isImm, immVal, _) = parseOperand(n, ctx)
+    if isImm:
+      if immVal >= low(int32) and immVal <= high(int32):
+        ctx.buf.emitMovImmToReg32(dest, int32(immVal))
       else:
-         a.buf.emitMovImmToReg(destReg, imm)
-      
-      let endT = next(a.r)
-      assert endT.tk == ParRi
-    elif t.tk == ParLe:
-      # Could be (reg) or (mem ...) or tag
-      let name = $t.s
-      if name in a.regMap:
-        # (reg)
-        let srcReg = a.regMap[name]
-        let endReg = next(a.r)
-        assert endReg.tk == ParRi
-        a.buf.emitMov(destReg, srcReg)
-        let endT = next(a.r)
-        assert endT.tk == ParRi
-      else:
-        # (mem ...) or (+ 56) or similar?
-        # For now, assume register or int
-        quit "Unsupported source for mov: " & name
+        ctx.buf.emitMovImmToReg(dest, immVal)
     else:
-      quit "Unexpected token in mov source"
-
-  of LabTagId:
-    # (lab :name)
-    let t = next(a.r)
-    if t.tk == SymbolDef:
-      let name = $t.s
-      let labelId = a.getLabel(name)
-      a.buf.defineLabel(labelId)
+      ctx.buf.emitMov(dest, srcReg)
+  of AddTagId:
+    let dest = parseRegister(n)
+    let (srcReg, isImm, immVal, _) = parseOperand(n, ctx)
+    if isImm:
+      ctx.buf.emitAddImm(dest, int32(immVal))
     else:
-      quit "Expected SymbolDef for label (e.g. :name), got " & $t.tk
-    let endT = next(a.r)
-    assert endT.tk == ParRi
-
-  of CallTagId:
-    # (call label)
-    let t = next(a.r)
-    if t.tk == Symbol:
-      let name = $t.s
-      let labelId = a.getLabel(name)
-      a.buf.emitCall(labelId)
-    else:
-      quit "Expected Symbol for call (e.g. name), got " & $t.tk
-    # Consume args...
-    while true:
-      let subT = next(a.r)
-      if subT.tk == ParRi: break
-      if subT.tk == ParLe:
-        let subTag = a.parseTag(subT)
-        a.compileStmt(subTag)
-
-  of RodataTagId:
-    # (rodata :name "string")
-    let tName = next(a.r)
-    if tName.tk == SymbolDef:
-      let name = $tName.s
-      let labelId = a.getLabel(name)
-      a.buf.defineLabel(labelId)
-    else:
-      quit "Expected SymbolDef for rodata name (e.g. :name), got " & $tName.tk
-      
-    let tStr = next(a.r)
-    if tStr.tk == StringLit:
-      let s = decodeStr(tStr)
-      for c in s:
-        a.buf.add(byte(c))
-    else:
-      quit "Expected string literal for rodata"
-      
-    let endT = next(a.r)
-    assert endT.tk == ParRi
-
+      ctx.buf.emitAdd(dest, srcReg)
+  of SyscallTagId:
+    ctx.buf.emitSyscall()
   of LeaTagId:
-    # (lea (dest) src)
-    let destReg = a.parseReg()
-    
-    let t = next(a.r)
-    if t.tk == Symbol:
-        # (lea (reg) symbol) -> LEA reg, [RIP + symbol]
-        let name = $t.s
-        let labelId = a.getLabel(name)
-        a.buf.emitLea(destReg, labelId)
-        let endT = next(a.r)
-        assert endT.tk == ParRi
-    elif t.tk == ParLe:
-        let subTag = a.parseTag(t)
-        # Potentially handle (mem ...) here later
-        quit "Complex lea expressions not supported yet, use symbol for RIP-relative addressing"
-    else:
-        quit "Expected symbol or expression in lea"
-
-  # Add other instructions as needed
+    let dest = parseRegister(n)
+    let (_, _, _, label) = parseOperand(n, ctx)
+    ctx.buf.emitLea(dest, label)
+  # ... handle other instructions ...
   else:
-    # Skip unknown tags recursively
-    # echo "Skipping tag: ", tag
-    while true:
-      let t = next(a.r)
-      if t.tk == ParRi: break
-      if t.tk == ParLe:
-          # consume nested
-          var depth = 1
-          while depth > 0:
-              let n = next(a.r)
-              if n.tk == ParLe: inc depth
-              elif n.tk == ParRi: dec depth
+    error("Unknown instruction: " & $tag, n)
+    
+  if n.kind != ParRi: error("Expected ) at end of instruction", n)
+  inc n
 
-proc writeElf(a: var Assembler) =
+proc pass2(n: var Cursor; ctx: var GenContext) =
+  var n = n
+  if n.kind == ParLe and n.tag == StmtsTagId:
+    inc n
+    while n.kind != ParRi:
+      if n.kind == ParLe:
+        case n.tag
+        of ProcTagId:
+          let oldScope = ctx.scope
+          ctx.scope = newScope(oldScope)
+          inc n
+          let name = getSym(n)
+          ctx.procName = name
+          inc n
+          while n.kind == ParLe and n.tag != BodyTagId:
+            skip n
+          if n.kind == ParLe and n.tag == BodyTagId:
+            inc n
+            while n.kind != ParRi:
+              genInst(n, ctx)
+            inc n
+          if n.kind != ParRi: error("Expected ) at end of proc", n)
+          inc n
+          ctx.scope = oldScope
+        of RodataTagId:
+          inc n
+          let name = getSym(n)
+          let sym = ctx.scope.lookup(name)
+          let labId = ctx.buf.createLabel()
+          sym.offset = int(labId)
+          ctx.buf.defineLabel(labId)
+          inc n
+          let s = getStr(n)
+          for c in s: ctx.buf.add byte(c)
+          inc n
+          inc n
+        else:
+          if rawTagIsNifasmInst(n.tag) or n.tag == IteTagId or n.tag == LoopTagId:
+             genInst(n, ctx)
+          else:
+             skip n
+      else:
+        skip n
+    inc n
+
+proc writeElf(a: var GenContext; outfile: string) =
   a.buf.finalize()
   let code = a.buf.data
-  
-  # Entry point: assume 0x400000 + headers + code offset
-  # Simplified: Load at 0x400000
-  
   let baseAddr = 0x400000.uint64
-  let headersSize = 64 + 56 # Ehdr + Phdr
-  let entryAddr = baseAddr + headersSize.uint64 # Entry at start of code
-  
+  let headersSize = 64 + 56
+  let entryAddr = baseAddr + headersSize.uint64
   var ehdr = initHeader(entryAddr)
   let fileSize = headersSize + code.len
   let memSize = fileSize
   var phdr = initPhdr(0, baseAddr, fileSize.uint64, memSize.uint64, PF_R or PF_X)
-  
-  var f = newFileStream(a.outfile, fmWrite)
+  var f = newFileStream(outfile, fmWrite)
   defer: f.close()
-  
   f.write(ehdr)
   f.write(phdr)
   if code.len > 0:
     f.writeData(unsafeAddr code[0], code.len)
-  
-  # Make executable
   let perms = {fpUserExec, fpGroupExec, fpOthersExec, fpUserRead, fpUserWrite}
-  setFilePermissions(a.outfile, perms)
+  setFilePermissions(outfile, perms)
 
 proc handleCmdLine() =
   var filename = ""
   var outfile = ""
-  
   for kind, key, val in getopt():
     case kind
     of cmdArgument:
       if filename.len == 0: filename = key
-      else: quit "Error: multiple input files not supported yet"
     of cmdLongOption, cmdShortOption:
       case key.normalize
       of "output", "o": outfile = val
       of "help", "h": quit(Usage, QuitSuccess)
       of "version", "v": quit(Version, QuitSuccess)
-      else: quit "Error: unknown option: " & key
     of cmdEnd: assert false
 
-  if filename.len == 0:
-    quit(Usage, QuitSuccess)
-  
-  if outfile.len == 0:
-    outfile = filename.changeFileExt("") # No extension for executable
+  if filename.len == 0: quit(Usage, QuitSuccess)
+  if outfile.len == 0: outfile = filename.changeFileExt("")
 
-  var a = initAssembler(filename, outfile)
-  try:
-    process(a)
-    writeElf(a)
-  finally:
-    close(a)
+  var buf = parseFromFile(filename)
+  var n = beginRead(buf)
+  
+  var scope = newScope()
+  
+  var n1 = n
+  pass1(n1, scope)
+  
+  var ctx = GenContext(scope: scope, buf: initBuffer())
+  var n2 = n
+  pass2(n2, ctx)
+  
+  writeElf(ctx, outfile)
 
 when isMainModule:
   handleCmdLine()
