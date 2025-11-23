@@ -1512,6 +1512,82 @@ proc emitSeto*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x90, reg)
 proc emitSets*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x98, reg)
 proc emitSetp*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x9A, reg)
 
+# Conditional move instructions
+proc emitCmovcc*(dest: var Buffer; code: byte; destReg, srcReg: Register) =
+  ## Emit CMOVcc destReg, srcReg
+  var rex = RexPrefix(w: true)
+  if needsRex(destReg): rex.r = true
+  if needsRex(srcReg): rex.b = true
+  
+  if rex.r or rex.b or rex.w:
+    dest.add(encodeRex(rex))
+    
+  dest.add(0x0F)
+  dest.add(code)
+  dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
+
+proc emitCmovcc*(dest: var Buffer; code: byte; destReg: Register; srcMem: MemoryOperand) =
+  ## Emit CMOVcc destReg, mem
+  var rex = RexPrefix(w: true)
+  if needsRex(destReg): rex.r = true
+  if needsRex(srcMem.base): rex.b = true
+  if srcMem.hasIndex and needsRex(srcMem.index): rex.x = true
+  
+  if rex.r or rex.b or rex.x or rex.w:
+    dest.add(encodeRex(rex))
+    
+  dest.add(0x0F)
+  dest.add(code)
+  dest.emitMem(int(destReg), srcMem)
+
+proc emitCmove*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x44, d, s)
+proc emitCmove*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x44, d, s)
+
+proc emitCmovne*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x45, d, s)
+proc emitCmovne*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x45, d, s)
+
+proc emitCmovg*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4F, d, s)
+proc emitCmovg*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4F, d, s)
+
+proc emitCmovge*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4D, d, s)
+proc emitCmovge*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4D, d, s)
+
+proc emitCmovl*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4C, d, s)
+proc emitCmovl*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4C, d, s)
+
+proc emitCmovle*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4E, d, s)
+proc emitCmovle*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4E, d, s)
+
+proc emitCmova*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x47, d, s)
+proc emitCmova*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x47, d, s)
+
+proc emitCmovae*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x43, d, s)
+proc emitCmovae*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x43, d, s)
+
+proc emitCmovb*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x42, d, s)
+proc emitCmovb*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x42, d, s)
+
+proc emitCmovbe*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x46, d, s)
+proc emitCmovbe*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x46, d, s)
+
+proc emitCmovo*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x40, d, s)
+proc emitCmovo*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x40, d, s)
+
+proc emitCmovno*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x41, d, s)
+proc emitCmovno*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x41, d, s)
+
+proc emitCmovs*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x48, d, s)
+proc emitCmovs*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x48, d, s)
+
+proc emitCmovns*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x49, d, s)
+proc emitCmovns*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x49, d, s)
+
+proc emitCmovp*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4A, d, s)
+proc emitCmovp*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4A, d, s)
+
+proc emitCmovnp*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4B, d, s)
+proc emitCmovnp*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4B, d, s)
+
 # Stack operations
 proc emitPush*(dest: var Buffer; reg: Register) =
   ## Emit PUSH reg

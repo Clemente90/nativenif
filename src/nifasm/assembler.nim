@@ -1078,6 +1078,135 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     if dest.isMem: error("SETcc memory not supported yet", n)
     ctx.buf.emitSetp(dest.reg)
 
+  # Conditional moves
+  of CmoveTagId, CmovzTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmove(dest.reg, op.mem)
+    else: ctx.buf.emitCmove(dest.reg, op.reg)
+
+  of CmovneTagId, CmovnzTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovne(dest.reg, op.mem)
+    else: ctx.buf.emitCmovne(dest.reg, op.reg)
+
+  of CmovaTagId, CmovnbeTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmova(dest.reg, op.mem)
+    else: ctx.buf.emitCmova(dest.reg, op.reg)
+
+  of CmovaeTagId, CmovnbTagId, CmovncTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovae(dest.reg, op.mem)
+    else: ctx.buf.emitCmovae(dest.reg, op.reg)
+
+  of CmovbTagId, CmovnaeTagId, CmovcTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovb(dest.reg, op.mem)
+    else: ctx.buf.emitCmovb(dest.reg, op.reg)
+
+  of CmovbeTagId, CmovnaTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovbe(dest.reg, op.mem)
+    else: ctx.buf.emitCmovbe(dest.reg, op.reg)
+
+  of CmovgTagId, CmovnleTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovg(dest.reg, op.mem)
+    else: ctx.buf.emitCmovg(dest.reg, op.reg)
+
+  of CmovgeTagId, CmovnlTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovge(dest.reg, op.mem)
+    else: ctx.buf.emitCmovge(dest.reg, op.reg)
+
+  of CmovlTagId, CmovngeTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovl(dest.reg, op.mem)
+    else: ctx.buf.emitCmovl(dest.reg, op.reg)
+
+  of CmovleTagId, CmovngTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovle(dest.reg, op.mem)
+    else: ctx.buf.emitCmovle(dest.reg, op.reg)
+
+  of CmovoTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovo(dest.reg, op.mem)
+    else: ctx.buf.emitCmovo(dest.reg, op.reg)
+
+  of CmovsTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovs(dest.reg, op.mem)
+    else: ctx.buf.emitCmovs(dest.reg, op.reg)
+
+  of CmovpTagId, CmovpeTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovp(dest.reg, op.mem)
+    else: ctx.buf.emitCmovp(dest.reg, op.reg)
+
+  of CmovnpTagId, CmovpoTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovnp(dest.reg, op.mem)
+    else: ctx.buf.emitCmovnp(dest.reg, op.reg)
+
+  of CmovnsTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovns(dest.reg, op.mem)
+    else: ctx.buf.emitCmovns(dest.reg, op.reg)
+
+  of CmovnoTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem: error("CMOV destination must be a register", n)
+    if op.isImm: error("CMOV immediate not supported", n)
+    if op.isMem: ctx.buf.emitCmovno(dest.reg, op.mem)
+    else: ctx.buf.emitCmovno(dest.reg, op.reg)
+
   # Stack
   of PushTagId:
     let op = parseOperand(n, ctx)

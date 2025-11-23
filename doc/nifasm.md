@@ -312,6 +312,27 @@ These instructions set a byte register or memory location to 0 or 1 based on CPU
 - `(sets <dest>)` - Set if sign (SF=1)
 - `(setp <dest>)` - Set if parity (PF=1)
 
+### Conditional moves
+
+These instructions move data if the condition is met. `dest` must be a register.
+
+- `(cmove <dest> <src>)` / `(cmovz ...)` - Move if equal/zero
+- `(cmovne <dest> <src>)` / `(cmovnz ...)` - Move if not equal/not zero
+- `(cmova <dest> <src>)` / `(cmovnbe ...)` - Move if above
+- `(cmovae <dest> <src>)` / `(cmovnb ...)` / `(cmovnc ...)` - Move if above or equal
+- `(cmovb <dest> <src>)` / `(cmovnae ...)` / `(cmovc ...)` - Move if below
+- `(cmovbe <dest> <src>)` / `(cmovna ...)` - Move if below or equal
+- `(cmovg <dest> <src>)` / `(cmovnle ...)` - Move if greater
+- `(cmovge <dest> <src>)` / `(cmovnl ...)` - Move if greater or equal
+- `(cmovl <dest> <src>)` / `(cmovnge ...)` - Move if less
+- `(cmovle <dest> <src>)` / `(cmovng ...)` - Move if less or equal
+- `(cmovo <dest> <src>)` - Move if overflow
+- `(cmovno <dest> <src>)` - Move if not overflow
+- `(cmovs <dest> <src>)` - Move if sign
+- `(cmovns <dest> <src>)` - Move if not sign
+- `(cmovp <dest> <src>)` / `(cmovpe ...)` - Move if parity
+- `(cmovnp <dest> <src>)` / `(cmovpo ...)` - Move if not parity
+
 ### Control flow
 
 **Unconditional jumps:**

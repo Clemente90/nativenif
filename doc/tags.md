@@ -70,6 +70,36 @@
 | `(seto D)`             | NifasmInst                  | set byte if overflow |
 | `(sets D)`             | NifasmInst                  | set byte if sign |
 | `(setp D)`             | NifasmInst                  | set byte if parity |
+| `(cmove D S)`          | NifasmInst                  | conditional move if equal |
+| `(cmovz D S)`          | NifasmInst                  | conditional move if zero |
+| `(cmovne D S)`         | NifasmInst                  | conditional move if not equal |
+| `(cmovnz D S)`         | NifasmInst                  | conditional move if not zero |
+| `(cmova D S)`          | NifasmInst                  | conditional move if above |
+| `(cmovnbe D S)`        | NifasmInst                  | conditional move if not below or equal |
+| `(cmovae D S)`         | NifasmInst                  | conditional move if above or equal |
+| `(cmovnb D S)`         | NifasmInst                  | conditional move if not below |
+| `(cmovnc D S)`         | NifasmInst                  | conditional move if not carry |
+| `(cmovb D S)`          | NifasmInst                  | conditional move if below |
+| `(cmovnae D S)`        | NifasmInst                  | conditional move if not above or equal |
+| `(cmovc D S)`          | NifasmInst                  | conditional move if carry |
+| `(cmovbe D S)`         | NifasmInst                  | conditional move if below or equal |
+| `(cmovna D S)`         | NifasmInst                  | conditional move if not above |
+| `(cmovg D S)`          | NifasmInst                  | conditional move if greater |
+| `(cmovnle D S)`        | NifasmInst                  | conditional move if not less or equal |
+| `(cmovge D S)`         | NifasmInst                  | conditional move if greater or equal |
+| `(cmovnl D S)`         | NifasmInst                  | conditional move if not less |
+| `(cmovl D S)`          | NifasmInst                  | conditional move if less |
+| `(cmovnge D S)`        | NifasmInst                  | conditional move if not greater or equal |
+| `(cmovle D S)`         | NifasmInst                  | conditional move if less or equal |
+| `(cmovng D S)`         | NifasmInst                  | conditional move if not greater |
+| `(cmovo D S)`          | NifasmInst                  | conditional move if overflow |
+| `(cmovno D S)`         | NifasmInst                  | conditional move if not overflow |
+| `(cmovs D S)`          | NifasmInst                  | conditional move if sign |
+| `(cmovns D S)`         | NifasmInst                  | conditional move if not sign |
+| `(cmovp D S)`          | NifasmInst                  | conditional move if parity |
+| `(cmovnp D S)`         | NifasmInst                  | conditional move if not parity |
+| `(cmovpe D S)`         | NifasmInst                  | conditional move if parity even (alias for p) |
+| `(cmovpo D S)`         | NifasmInst                  | conditional move if parity odd (alias for np) |
 | `(jmp L)`              | NifasmInst                  | unconditional jump |
 | `(je L)`               | NifasmInst                  | jump if equal |
 | `(jz L)`               | NifasmInst                  | jump if zero |

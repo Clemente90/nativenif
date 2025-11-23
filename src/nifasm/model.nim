@@ -57,6 +57,36 @@ type
     SetoI = (ord(SetoTagId), "seto")  ## set byte if overflow
     SetsI = (ord(SetsTagId), "sets")  ## set byte if sign
     SetpI = (ord(SetpTagId), "setp")  ## set byte if parity
+    CmoveI = (ord(CmoveTagId), "cmove")  ## conditional move if equal
+    CmovzI = (ord(CmovzTagId), "cmovz")  ## conditional move if zero
+    CmovneI = (ord(CmovneTagId), "cmovne")  ## conditional move if not equal
+    CmovnzI = (ord(CmovnzTagId), "cmovnz")  ## conditional move if not zero
+    CmovaI = (ord(CmovaTagId), "cmova")  ## conditional move if above
+    CmovnbeI = (ord(CmovnbeTagId), "cmovnbe")  ## conditional move if not below or equal
+    CmovaeI = (ord(CmovaeTagId), "cmovae")  ## conditional move if above or equal
+    CmovnbI = (ord(CmovnbTagId), "cmovnb")  ## conditional move if not below
+    CmovncI = (ord(CmovncTagId), "cmovnc")  ## conditional move if not carry
+    CmovbI = (ord(CmovbTagId), "cmovb")  ## conditional move if below
+    CmovnaeI = (ord(CmovnaeTagId), "cmovnae")  ## conditional move if not above or equal
+    CmovcI = (ord(CmovcTagId), "cmovc")  ## conditional move if carry
+    CmovbeI = (ord(CmovbeTagId), "cmovbe")  ## conditional move if below or equal
+    CmovnaI = (ord(CmovnaTagId), "cmovna")  ## conditional move if not above
+    CmovgI = (ord(CmovgTagId), "cmovg")  ## conditional move if greater
+    CmovnleI = (ord(CmovnleTagId), "cmovnle")  ## conditional move if not less or equal
+    CmovgeI = (ord(CmovgeTagId), "cmovge")  ## conditional move if greater or equal
+    CmovnlI = (ord(CmovnlTagId), "cmovnl")  ## conditional move if not less
+    CmovlI = (ord(CmovlTagId), "cmovl")  ## conditional move if less
+    CmovngeI = (ord(CmovngeTagId), "cmovnge")  ## conditional move if not greater or equal
+    CmovleI = (ord(CmovleTagId), "cmovle")  ## conditional move if less or equal
+    CmovngI = (ord(CmovngTagId), "cmovng")  ## conditional move if not greater
+    CmovoI = (ord(CmovoTagId), "cmovo")  ## conditional move if overflow
+    CmovnoI = (ord(CmovnoTagId), "cmovno")  ## conditional move if not overflow
+    CmovsI = (ord(CmovsTagId), "cmovs")  ## conditional move if sign
+    CmovnsI = (ord(CmovnsTagId), "cmovns")  ## conditional move if not sign
+    CmovpI = (ord(CmovpTagId), "cmovp")  ## conditional move if parity
+    CmovnpI = (ord(CmovnpTagId), "cmovnp")  ## conditional move if not parity
+    CmovpeI = (ord(CmovpeTagId), "cmovpe")  ## conditional move if parity even (alias for p)
+    CmovpoI = (ord(CmovpoTagId), "cmovpo")  ## conditional move if parity odd (alias for np)
     JmpI = (ord(JmpTagId), "jmp")  ## unconditional jump
     JeI = (ord(JeTagId), "je")  ## jump if equal
     JzI = (ord(JzTagId), "jz")  ## jump if zero
@@ -102,7 +132,7 @@ type
     PrefetchntaI = (ord(PrefetchntaTagId), "prefetchnta")  ## prefetch non-temporal
 
 proc rawTagIsNifasmInst*(raw: TagEnum): bool {.inline.} =
-  raw in {MovTagId, LeaTagId, MovapdTagId, MovsdTagId, AddTagId, SubTagId, MulTagId, ImulTagId, DivTagId, IdivTagId, AddsdTagId, SubsdTagId, MulsdTagId, DivsdTagId, AndTagId, OrTagId, XorTagId, ShlTagId, ShrTagId, SalTagId, SarTagId, IncTagId, DecTagId, NegTagId, NotTagId, CmpTagId, TestTagId, SeteTagId, SetzTagId, SetneTagId, SetnzTagId, SetaTagId, SetnbeTagId, SetaeTagId, SetnbTagId, SetncTagId, SetbTagId, SetnaeTagId, SetcTagId, SetbeTagId, SetnaTagId, SetgTagId, SetnleTagId, SetgeTagId, SetnlTagId, SetlTagId, SetngeTagId, SetleTagId, SetngTagId, SetoTagId, SetsTagId, SetpTagId, JmpTagId, JeTagId, JzTagId, JneTagId, JnzTagId, JgTagId, JngTagId, JgeTagId, JngeTagId, JaTagId, JnaTagId, JaeTagId, JnaeTagId, JlTagId, JleTagId, JbTagId, JbeTagId, CallTagId, RetTagId, PushTagId, PopTagId, NopTagId, SyscallTagId, LabTagId, IteTagId, LoopTagId, StmtsTagId, KillTagId, LockTagId, XchgTagId, CmpxchgTagId, XaddTagId, Cmpxchg8bTagId, MfenceTagId, SfenceTagId, LfenceTagId, PauseTagId, ClflushTagId, ClflushoptTagId, Prefetcht0TagId, Prefetcht1TagId, Prefetcht2TagId, PrefetchntaTagId}
+  raw in {MovTagId, LeaTagId, MovapdTagId, MovsdTagId, AddTagId, SubTagId, MulTagId, ImulTagId, DivTagId, IdivTagId, AddsdTagId, SubsdTagId, MulsdTagId, DivsdTagId, AndTagId, OrTagId, XorTagId, ShlTagId, ShrTagId, SalTagId, SarTagId, IncTagId, DecTagId, NegTagId, NotTagId, CmpTagId, TestTagId, SeteTagId, SetzTagId, SetneTagId, SetnzTagId, SetaTagId, SetnbeTagId, SetaeTagId, SetnbTagId, SetncTagId, SetbTagId, SetnaeTagId, SetcTagId, SetbeTagId, SetnaTagId, SetgTagId, SetnleTagId, SetgeTagId, SetnlTagId, SetlTagId, SetngeTagId, SetleTagId, SetngTagId, SetoTagId, SetsTagId, SetpTagId, CmoveTagId, CmovzTagId, CmovneTagId, CmovnzTagId, CmovaTagId, CmovnbeTagId, CmovaeTagId, CmovnbTagId, CmovncTagId, CmovbTagId, CmovnaeTagId, CmovcTagId, CmovbeTagId, CmovnaTagId, CmovgTagId, CmovnleTagId, CmovgeTagId, CmovnlTagId, CmovlTagId, CmovngeTagId, CmovleTagId, CmovngTagId, CmovoTagId, CmovnoTagId, CmovsTagId, CmovnsTagId, CmovpTagId, CmovnpTagId, CmovpeTagId, CmovpoTagId, JmpTagId, JeTagId, JzTagId, JneTagId, JnzTagId, JgTagId, JngTagId, JgeTagId, JngeTagId, JaTagId, JnaTagId, JaeTagId, JnaeTagId, JlTagId, JleTagId, JbTagId, JbeTagId, CallTagId, RetTagId, PushTagId, PopTagId, NopTagId, SyscallTagId, LabTagId, IteTagId, LoopTagId, StmtsTagId, KillTagId, LockTagId, XchgTagId, CmpxchgTagId, XaddTagId, Cmpxchg8bTagId, MfenceTagId, SfenceTagId, LfenceTagId, PauseTagId, ClflushTagId, ClflushoptTagId, Prefetcht0TagId, Prefetcht1TagId, Prefetcht2TagId, PrefetchntaTagId}
 
 type
   NifasmType* = enum
