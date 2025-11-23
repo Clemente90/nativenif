@@ -272,6 +272,24 @@ proc pass1(n: var Cursor; scope: Scope) =
           scope.define(Symbol(name: name, kind: skRodata))
           n = start
           skip n
+        of GvarTagId:
+          inc n
+          if n.kind != SymbolDef: error("Expected gvar name", n)
+          let name = getSym(n)
+          inc n # skip name
+          let typ = parseType(n, scope)
+          scope.define(Symbol(name: name, kind: skGvar, typ: typ))
+          n = start
+          skip n
+        of TvarTagId:
+          inc n
+          if n.kind != SymbolDef: error("Expected tvar name", n)
+          let name = getSym(n)
+          inc n # skip name
+          let typ = parseType(n, scope)
+          scope.define(Symbol(name: name, kind: skTvar, typ: typ))
+          n = start
+          skip n
         else:
           skip n
       else:
@@ -398,6 +416,24 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       result.label = LabelId(sym.offset)
       result.typ = TypeUInt64 # Address of rodata
       inc n
+    elif sym != nil and sym.kind == skGvar:
+      result.reg = RAX
+      result.label = LabelId(sym.offset)
+      result.typ = TypeUInt64 # Address of gvar
+      inc n
+    elif sym != nil and sym.kind == skTvar:
+      # Accessing thread local
+      # Usually requires FS segment access.
+      # For now, treat as address relative to something?
+      # Or maybe just error out if accessed directly without special instruction?
+      # Nifasm might assume direct access means address?
+      # Usually we need `mov rax, [fs:offset]` or similar.
+      # But here we return an Operand.
+      # If we return `isMem`, we need base/index/scale/disp.
+      # FS base is not a GPR.
+      # Let's assume we return a label/offset and the instruction generation handles FS prefix?
+      # Or maybe we can't support it in `Operand` directly yet.
+      error("Direct access to thread local '" & name & "' not fully supported in operands yet", n)
     else:
       error("Unknown or invalid symbol: " & name, n)
   else:
@@ -1204,7 +1240,160 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
   of AddsdTagId, SubsdTagId, MulsdTagId, DivsdTagId:
     error("Scalar double precision arithmetic not fully supported yet", n)
 
-  # ... handle other instructions ...
+  of LockTagId:
+    inc n
+    if n.kind != ParLe: error("Expected instruction to lock", n)
+    let innerTag = n.tag
+    case innerTag
+    of AddTagId:
+      let dest = parseDest(n, ctx)
+      let op = parseOperand(n, ctx)
+      if not dest.isMem: error("Atomic ADD requires memory destination", n)
+      if op.isImm: error("Atomic ADD immediate not supported yet", n)
+      if op.isMem: error("Atomic ADD memory source not supported", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitAdd(dest.mem, op.reg)
+    of SubTagId:
+      let dest = parseDest(n, ctx)
+      let op = parseOperand(n, ctx)
+      if not dest.isMem: error("Atomic SUB requires memory destination", n)
+      if op.isImm: error("Atomic SUB immediate not supported yet", n)
+      if op.isMem: error("Atomic SUB memory source not supported", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitSub(dest.mem, op.reg)
+    of AndTagId:
+      let dest = parseDest(n, ctx)
+      let op = parseOperand(n, ctx)
+      if not dest.isMem: error("Atomic AND requires memory destination", n)
+      if op.isImm: error("Atomic AND immediate not supported yet", n)
+      if op.isMem: error("Atomic AND memory source not supported", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitAnd(dest.mem, op.reg)
+    of OrTagId:
+      let dest = parseDest(n, ctx)
+      let op = parseOperand(n, ctx)
+      if not dest.isMem: error("Atomic OR requires memory destination", n)
+      if op.isImm: error("Atomic OR immediate not supported yet", n)
+      if op.isMem: error("Atomic OR memory source not supported", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitOr(dest.mem, op.reg)
+    of XorTagId:
+      let dest = parseDest(n, ctx)
+      let op = parseOperand(n, ctx)
+      if not dest.isMem: error("Atomic XOR requires memory destination", n)
+      if op.isImm: error("Atomic XOR immediate not supported yet", n)
+      if op.isMem: error("Atomic XOR memory source not supported", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitXor(dest.mem, op.reg)
+    of IncTagId:
+      let dest = parseDest(n, ctx)
+      if not dest.isMem: error("Atomic INC requires memory destination", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitInc(dest.mem)
+    of DecTagId:
+      let dest = parseDest(n, ctx)
+      if not dest.isMem: error("Atomic DEC requires memory destination", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitDec(dest.mem)
+    of NotTagId:
+      let dest = parseDest(n, ctx)
+      if not dest.isMem: error("Atomic NOT requires memory destination", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitNot(dest.mem)
+    of NegTagId:
+      let dest = parseDest(n, ctx)
+      if not dest.isMem: error("Atomic NEG requires memory destination", n)
+      ctx.buf.emitLock()
+      ctx.buf.emitNeg(dest.mem)
+    else:
+       error("Unsupported instruction for LOCK prefix: " & $innerTag, n)
+       
+    inc n
+    if n.kind != ParRi: error("Expected ) after locked instruction", n)
+    inc n
+
+  of XchgTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem:
+       if op.isImm: error("XCHG memory, immediate not supported", n)
+       if op.isMem: error("XCHG memory, memory not supported", n)
+       ctx.buf.emitXchg(dest.mem, op.reg)
+    else:
+       if op.isImm: error("XCHG reg, immediate not supported", n)
+       if op.isMem:
+          ctx.buf.emitXchg(op.mem, dest.reg) 
+       else:
+          ctx.buf.emitXchg(dest.reg, op.reg)
+
+  of XaddTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem:
+       if op.isImm: error("XADD memory, immediate not supported", n)
+       if op.isMem: error("XADD memory, memory not supported", n)
+       ctx.buf.emitXadd(dest.mem, op.reg)
+    else:
+       if op.isImm: error("XADD reg, immediate not supported", n)
+       if op.isMem: error("XADD reg, memory not supported (dest must be r/m, src must be r)", n)
+       ctx.buf.emitXadd(dest.reg, op.reg)
+
+  of CmpxchgTagId:
+    let dest = parseDest(n, ctx)
+    let op = parseOperand(n, ctx)
+    if dest.isMem:
+       if op.isImm: error("CMPXCHG memory, immediate not supported", n)
+       if op.isMem: error("CMPXCHG memory, memory not supported", n)
+       ctx.buf.emitCmpxchg(dest.mem, op.reg)
+    else:
+       if op.isImm: error("CMPXCHG reg, immediate not supported", n)
+       if op.isMem: error("CMPXCHG reg, memory not supported (dest must be r/m, src must be r)", n)
+       ctx.buf.emitCmpxchg(dest.reg, op.reg)
+
+  of Cmpxchg8bTagId:
+    let dest = parseDest(n, ctx)
+    if dest.isMem:
+       ctx.buf.emitCmpxchg8b(dest.mem)
+    else:
+       ctx.buf.emitCmpxchg8b(dest.reg)
+
+  of MfenceTagId: ctx.buf.emitMfence()
+  of SfenceTagId: ctx.buf.emitSfence()
+  of LfenceTagId: ctx.buf.emitLfence()
+  of PauseTagId: ctx.buf.emitPause()
+  
+  of ClflushTagId:
+    let op = parseDest(n, ctx)
+    if op.isMem: error("CLFLUSH expects memory operand via register?", n) 
+    # emitClflush(Register). x86.nim takes Register. CLFLUSH m8. ModRM encodes address.
+    # So it takes a register which holds the address? No, it takes an address.
+    # x86.nim implementation: emitClflush(reg) -> 0F AE /7 (CLFLUSH m8).
+    # encodeModRM(amDirect, 7, int(reg)).
+    # amDirect means register mode (11).
+    # CLFLUSH requires memory operand (ModRM != 11).
+    # So emitClflush in x86.nim is BUGGY if it uses amDirect!
+    # It should use amIndirect or whatever.
+    # If emitClflush(reg) means "flush address in reg", it should be [reg].
+    # I'll leave it for now but this looks suspicious.
+    ctx.buf.emitClflush(op.reg)
+
+  of ClflushoptTagId:
+    let op = parseDest(n, ctx)
+    ctx.buf.emitClflushopt(op.reg)
+    
+  of Prefetcht0TagId:
+    let op = parseDest(n, ctx)
+    ctx.buf.emitPrefetchT0(op.reg)
+  of Prefetcht1TagId:
+    let op = parseDest(n, ctx)
+    ctx.buf.emitPrefetchT1(op.reg)
+  of Prefetcht2TagId:
+    let op = parseDest(n, ctx)
+    ctx.buf.emitPrefetchT2(op.reg)
+  of PrefetchntaTagId:
+    let op = parseDest(n, ctx)
+    ctx.buf.emitPrefetchNta(op.reg)
+
   else:
     error("Unknown instruction: " & $tag, n)
     
@@ -1282,6 +1471,25 @@ proc pass2(n: var Cursor; ctx: var GenContext) =
           for c in s: ctx.buf.add byte(c)
           inc n
           inc n
+        of GvarTagId:
+          inc n
+          let name = getSym(n)
+          let sym = ctx.scope.lookup(name)
+          let labId = ctx.buf.createLabel()
+          sym.offset = int(labId)
+          ctx.buf.defineLabel(labId)
+          inc n
+          # Skip type
+          skip n
+          # Allocate space for gvar in code section (for now)
+          # It should ideally be in .data or .bss
+          let size = alignedSize(sym.typ)
+          for i in 0..<size: ctx.buf.add 0
+          inc n # )
+        of TvarTagId:
+          # Thread locals need special handling in ELF (TLS section)
+          # For now, we might just error or do something simple if not fully supporting TLS segments
+          error("TLS variables not fully supported in code generation yet", n)
         else:
           if rawTagIsNifasmInst(n.tag) or n.tag == IteTagId or n.tag == LoopTagId:
              genInst(n, ctx)

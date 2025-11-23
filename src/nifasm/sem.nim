@@ -23,7 +23,7 @@ type
     want*, got*: Type
 
   SymKind* = enum
-    skUnknown, skType, skVar, skParam, skProc, skLabel, skRodata
+    skUnknown, skType, skVar, skParam, skProc, skLabel, skRodata, skGvar, skTvar
 
   Param* = object
     name*: string

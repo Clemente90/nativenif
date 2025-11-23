@@ -435,6 +435,15 @@ proc emitInc*(dest: var Buffer; reg: Register) =
   dest.add(0xFF)  # INC r/m64 opcode
   dest.add(encodeModRM(amDirect, 0, int(reg)))  # /0 extension
 
+proc emitInc*(dest: var Buffer; mem: MemoryOperand) =
+  ## Emit INC instruction: INC mem
+  var rex = RexPrefix(w: true)
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0xFF)
+  dest.emitMem(0, mem)
+
 proc emitDec*(dest: var Buffer; reg: Register) =
   ## Emit DEC instruction: DEC reg (decrement)
   var rex = RexPrefix(w: true)
@@ -447,6 +456,15 @@ proc emitDec*(dest: var Buffer; reg: Register) =
   dest.add(0xFF)  # DEC r/m64 opcode
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
 
+proc emitDec*(dest: var Buffer; mem: MemoryOperand) =
+  ## Emit DEC instruction: DEC mem
+  var rex = RexPrefix(w: true)
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0xFF)
+  dest.emitMem(1, mem)
+
 proc emitNeg*(dest: var Buffer; reg: Register) =
   ## Emit NEG instruction: NEG reg (negate)
   var rex = RexPrefix(w: true)
@@ -458,6 +476,15 @@ proc emitNeg*(dest: var Buffer; reg: Register) =
 
   dest.add(0xF7)  # NEG r/m64 opcode
   dest.add(encodeModRM(amDirect, 3, int(reg)))  # /3 extension
+
+proc emitNeg*(dest: var Buffer; mem: MemoryOperand) =
+  ## Emit NEG instruction: NEG mem
+  var rex = RexPrefix(w: true)
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0xF7)
+  dest.emitMem(3, mem)
 
 proc emitCmp*(dest: var Buffer; a, b: Register) =
   ## Emit CMP instruction: CMP a, b (compare)
@@ -740,6 +767,15 @@ proc emitNot*(dest: var Buffer; reg: Register) =
 
   dest.add(0xF7)  # NOT r/m64 opcode
   dest.add(encodeModRM(amDirect, 2, int(reg)))  # /2 extension
+
+proc emitNot*(dest: var Buffer; mem: MemoryOperand) =
+  ## Emit NOT instruction: NOT mem
+  var rex = RexPrefix(w: true)
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0xF7)
+  dest.emitMem(2, mem)
 
 proc emitBsf*(dest: var Buffer; destReg, srcReg: Register) =
   ## Emit BSF instruction: BSF destReg, srcReg (bit scan forward)
@@ -1229,6 +1265,19 @@ proc emitXchg*(dest: var Buffer; a, b: Register) =
   dest.add(0x87)  # XCHG r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
+proc emitXchg*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+  ## Emit XCHG instruction: XCHG mem, reg
+  var rex = RexPrefix(w: true)
+  if needsRex(reg): rex.r = true
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  
+  if rex.r or rex.b or rex.x or rex.w:
+    dest.add(encodeRex(rex))
+    
+  dest.add(0x87) # XCHG r/m64, r64
+  dest.emitMem(int(reg), mem)
+
 proc emitXadd*(dest: var Buffer; a, b: Register) =
   ## Emit XADD instruction: XADD a, b (exchange and add)
   var rex = RexPrefix(w: true)
@@ -1242,6 +1291,20 @@ proc emitXadd*(dest: var Buffer; a, b: Register) =
   dest.add(0x0F)  # Two-byte opcode prefix
   dest.add(0xC1)  # XADD r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
+
+proc emitXadd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+  ## Emit XADD instruction: XADD mem, reg
+  var rex = RexPrefix(w: true)
+  if needsRex(reg): rex.r = true
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  
+  if rex.r or rex.b or rex.x or rex.w:
+    dest.add(encodeRex(rex))
+    
+  dest.add(0x0F)
+  dest.add(0xC1)
+  dest.emitMem(int(reg), mem)
 
 # Atomic compare and exchange
 proc emitCmpxchg*(dest: var Buffer; a, b: Register) =
@@ -1258,6 +1321,20 @@ proc emitCmpxchg*(dest: var Buffer; a, b: Register) =
   dest.add(0xB1)  # CMPXCHG r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
+proc emitCmpxchg*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+  ## Emit CMPXCHG instruction: CMPXCHG mem, reg
+  var rex = RexPrefix(w: true)
+  if needsRex(reg): rex.r = true
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  
+  if rex.r or rex.b or rex.x or rex.w:
+    dest.add(encodeRex(rex))
+    
+  dest.add(0x0F)
+  dest.add(0xB1)
+  dest.emitMem(int(reg), mem)
+
 # Atomic compare and exchange with 8-byte operand
 proc emitCmpxchg8b*(dest: var Buffer; reg: Register) =
   ## Emit CMPXCHG8B instruction: CMPXCHG8B reg (compare and exchange 8 bytes)
@@ -1271,6 +1348,20 @@ proc emitCmpxchg8b*(dest: var Buffer; reg: Register) =
   dest.add(0x0F)  # Two-byte opcode prefix
   dest.add(0xC7)  # CMPXCHG8B r/m64 opcode
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
+
+proc emitCmpxchg8b*(dest: var Buffer; mem: MemoryOperand) =
+  ## Emit CMPXCHG8B instruction: CMPXCHG8B mem
+  ## Note: With REX.W this is actually CMPXCHG16B on 64-bit processors
+  var rex = RexPrefix(w: true)
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  
+  if rex.b or rex.x or rex.w:
+    dest.add(encodeRex(rex))
+    
+  dest.add(0x0F)
+  dest.add(0xC7)
+  dest.emitMem(1, mem) # /1 extension
 
 # Atomic bit operations
 proc emitBtsAtomic*(dest: var Buffer; reg: Register; bit: int) =
@@ -1619,6 +1710,16 @@ proc emitAnd*(dest: var Buffer; a, b: Register) =
   dest.add(0x21)  # AND r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
+proc emitAnd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+  ## Emit AND instruction: AND mem, reg
+  var rex = RexPrefix(w: true)
+  if needsRex(reg): rex.r = true
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.r or rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0x21)
+  dest.emitMem(int(reg), mem)
+
 proc emitOr*(dest: var Buffer; a, b: Register) =
   ## Emit OR instruction: OR a, b
   var rex = RexPrefix(w: true)
@@ -1632,6 +1733,16 @@ proc emitOr*(dest: var Buffer; a, b: Register) =
   dest.add(0x09)  # OR r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
+proc emitOr*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+  ## Emit OR instruction: OR mem, reg
+  var rex = RexPrefix(w: true)
+  if needsRex(reg): rex.r = true
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.r or rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0x09)
+  dest.emitMem(int(reg), mem)
+
 proc emitXor*(dest: var Buffer; a, b: Register) =
   ## Emit XOR instruction: XOR a, b
   var rex = RexPrefix(w: true)
@@ -1644,6 +1755,16 @@ proc emitXor*(dest: var Buffer; a, b: Register) =
 
   dest.add(0x31)  # XOR r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
+
+proc emitXor*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+  ## Emit XOR instruction: XOR mem, reg
+  var rex = RexPrefix(w: true)
+  if needsRex(reg): rex.r = true
+  if needsRex(mem.base): rex.b = true
+  if mem.hasIndex and needsRex(mem.index): rex.x = true
+  if rex.r or rex.b or rex.x or rex.w: dest.add(encodeRex(rex))
+  dest.add(0x31)
+  dest.emitMem(int(reg), mem)
 
 # Atomic arithmetic operations
 proc emitAddAtomic*(dest: var Buffer; a, b: Register) =
@@ -1672,7 +1793,7 @@ proc emitXorAtomic*(dest: var Buffer; a, b: Register) =
   dest.emitXor(a, b)
 
 # Atomic increment and decrement
-proc emitcAtomic*(dest: var Buffer; reg: Register) =
+proc emitIncAtomic*(dest: var Buffer; reg: Register) =
   ## Emit atomic INC instruction: LOCK INC reg (atomic increment)
   dest.emitLock()
   dest.emitInc(reg)

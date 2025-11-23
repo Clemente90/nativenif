@@ -338,6 +338,37 @@ These instructions set a byte register or memory location to 0 or 1 based on CPU
 - `(push <operand>)` - Push onto stack
 - `(pop <operand>)` - Pop from stack
 
+### Atomic operations
+
+Atomic operations on x86 are typically achieved by prefixing instructions with `(lock)`. This prefix is only valid for instructions that modify memory.
+
+- `(lock (add <mem> <reg>))` - Atomic add
+- `(lock (sub <mem> <reg>))` - Atomic subtract
+- `(lock (inc <mem>))` - Atomic increment
+- `(lock (dec <mem>))` - Atomic decrement
+- `(lock (not <mem>))` - Atomic bitwise not
+- `(lock (neg <mem>))` - Atomic negate
+- `(lock (and <mem> <reg>))` - Atomic and
+- `(lock (or <mem> <reg>))` - Atomic or
+- `(lock (xor <mem> <reg>))` - Atomic xor
+
+In addition, some instructions are inherently atomic or support atomic behavior:
+
+- `(xchg <dest> <src>)` - Exchange. Atomic if one operand is memory.
+- `(xadd <dest> <src>)` - Exchange and Add.
+- `(cmpxchg <dest> <src>)` - Compare and Exchange.
+- `(cmpxchg8b <mem>)` - Compare and Exchange 8 bytes.
+
+Memory barriers and cache control:
+
+- `(mfence)` - Memory Fence
+- `(sfence)` - Store Fence
+- `(lfence)` - Load Fence
+- `(pause)` - Pause (for spin loops)
+- `(clflush <addr>)` - Flush Cache Line
+- `(prefetcht0 <addr>)` - Prefetch to all cache levels
+- `(prefetchnta <addr>)` - Prefetch non-temporal
+
 ### Special
 
 - `(nop)` - No operation

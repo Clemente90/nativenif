@@ -101,8 +101,25 @@
 | `(at B I)`             | NifasmExpr                  | array index |
 | `(mem ...)`            | NifasmExpr                  | memory reference |
 | `(rodata L S)`         | NifasmDecl                  | read-only data (string/bytes) |
+| `(gvar D L T)`         | NifasmDecl                  | global variable |
+| `(tvar D L T)`         | NifasmDecl                  | thread local variable |
 | `(kill S)`             | NifasmInst                  | kill variable |
 | `(cast T E)`         | NifasmExpr                  | type cast |
+| `(lock I)`             | NifasmInst                  | atomic lock prefix |
+| `(xchg D S)`           | NifasmInst                  | atomic exchange |
+| `(cmpxchg D S)`        | NifasmInst                  | atomic compare and exchange |
+| `(xadd D S)`           | NifasmInst                  | atomic exchange and add |
+| `(cmpxchg8b D)`        | NifasmInst                  | atomic compare and exchange 8 bytes |
+| `(mfence)`             | NifasmInst                  | memory fence |
+| `(sfence)`             | NifasmInst                  | store fence |
+| `(lfence)`             | NifasmInst                  | load fence |
+| `(pause)`              | NifasmInst                  | pause |
+| `(clflush O)`          | NifasmInst                  | cache line flush |
+| `(clflushopt O)`       | NifasmInst                  | optimized cache line flush |
+| `(prefetcht0 O)`       | NifasmInst                  | prefetch t0 |
+| `(prefetcht1 O)`       | NifasmInst                  | prefetch t1 |
+| `(prefetcht2 O)`       | NifasmInst                  | prefetch t2 |
+| `(prefetchnta O)`      | NifasmInst                  | prefetch non-temporal |
 | `(rax)`              | NifasmReg                   | register rax |
 | `(rbx)`              | NifasmReg                   | register rbx |
 | `(rcx)`              | NifasmReg                   | register rcx |

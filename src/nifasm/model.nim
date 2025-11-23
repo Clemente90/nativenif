@@ -116,9 +116,11 @@ type
     ClobberD = (ord(ClobberTagId), "clobber")  ## clobbered registers list
     VarD = (ord(VarTagId), "var")  ## variable declaration
     RodataD = (ord(RodataTagId), "rodata")  ## read-only data (string/bytes)
+    GvarD = (ord(GvarTagId), "gvar")  ## global variable
+    TvarD = (ord(TvarTagId), "tvar")  ## thread local variable
 
 proc rawTagIsNifasmDecl*(raw: TagEnum): bool {.inline.} =
-  raw in {TypeTagId, ProcTagId, ParamsTagId, ParamTagId, ResultTagId, ClobberTagId, VarTagId, RodataTagId}
+  raw in {TypeTagId, ProcTagId, ParamsTagId, ParamTagId, ResultTagId, ClobberTagId, VarTagId, RodataTagId, GvarTagId, TvarTagId}
 
 type
   NifasmExpr* = enum

@@ -104,8 +104,25 @@ type
     AtTagId
     MemTagId
     RodataTagId
+    GvarTagId
+    TvarTagId
     KillTagId
     CastTagId
+    LockTagId
+    XchgTagId
+    CmpxchgTagId
+    XaddTagId
+    Cmpxchg8bTagId
+    MfenceTagId
+    SfenceTagId
+    LfenceTagId
+    PauseTagId
+    ClflushTagId
+    ClflushoptTagId
+    Prefetcht0TagId
+    Prefetcht1TagId
+    Prefetcht2TagId
+    PrefetchntaTagId
     RaxTagId
     RbxTagId
     RcxTagId
@@ -260,56 +277,73 @@ const
     ("at", 99),
     ("mem", 100),
     ("rodata", 101),
-    ("kill", 102),
-    ("cast", 103),
-    ("rax", 104),
-    ("rbx", 105),
-    ("rcx", 106),
-    ("rdx", 107),
-    ("rsi", 108),
-    ("rdi", 109),
-    ("rbp", 110),
-    ("rsp", 111),
-    ("r8", 112),
-    ("r9", 113),
-    ("r10", 114),
-    ("r11", 115),
-    ("r12", 116),
-    ("r13", 117),
-    ("r14", 118),
-    ("r15", 119),
-    ("r0", 120),
-    ("r1", 121),
-    ("r2", 122),
-    ("r3", 123),
-    ("r4", 124),
-    ("r5", 125),
-    ("r6", 126),
-    ("r7", 127),
-    ("xmm0", 128),
-    ("xmm1", 129),
-    ("xmm2", 130),
-    ("xmm3", 131),
-    ("xmm4", 132),
-    ("xmm5", 133),
-    ("xmm6", 134),
-    ("xmm7", 135),
-    ("xmm8", 136),
-    ("xmm9", 137),
-    ("xmm10", 138),
-    ("xmm11", 139),
-    ("xmm12", 140),
-    ("xmm13", 141),
-    ("xmm14", 142),
-    ("xmm15", 143),
-    ("of", 144),
-    ("no", 145),
-    ("zf", 146),
-    ("nz", 147),
-    ("sf", 148),
-    ("ns", 149),
-    ("cf", 150),
-    ("nc", 151),
-    ("pf", 152),
-    ("np", 153)
+    ("gvar", 102),
+    ("tvar", 103),
+    ("kill", 104),
+    ("cast", 105),
+    ("lock", 106),
+    ("xchg", 107),
+    ("cmpxchg", 108),
+    ("xadd", 109),
+    ("cmpxchg8b", 110),
+    ("mfence", 111),
+    ("sfence", 112),
+    ("lfence", 113),
+    ("pause", 114),
+    ("clflush", 115),
+    ("clflushopt", 116),
+    ("prefetcht0", 117),
+    ("prefetcht1", 118),
+    ("prefetcht2", 119),
+    ("prefetchnta", 120),
+    ("rax", 121),
+    ("rbx", 122),
+    ("rcx", 123),
+    ("rdx", 124),
+    ("rsi", 125),
+    ("rdi", 126),
+    ("rbp", 127),
+    ("rsp", 128),
+    ("r8", 129),
+    ("r9", 130),
+    ("r10", 131),
+    ("r11", 132),
+    ("r12", 133),
+    ("r13", 134),
+    ("r14", 135),
+    ("r15", 136),
+    ("r0", 137),
+    ("r1", 138),
+    ("r2", 139),
+    ("r3", 140),
+    ("r4", 141),
+    ("r5", 142),
+    ("r6", 143),
+    ("r7", 144),
+    ("xmm0", 145),
+    ("xmm1", 146),
+    ("xmm2", 147),
+    ("xmm3", 148),
+    ("xmm4", 149),
+    ("xmm5", 150),
+    ("xmm6", 151),
+    ("xmm7", 152),
+    ("xmm8", 153),
+    ("xmm9", 154),
+    ("xmm10", 155),
+    ("xmm11", 156),
+    ("xmm12", 157),
+    ("xmm13", 158),
+    ("xmm14", 159),
+    ("xmm15", 160),
+    ("of", 161),
+    ("no", 162),
+    ("zf", 163),
+    ("nz", 164),
+    ("sf", 165),
+    ("ns", 166),
+    ("cf", 167),
+    ("nc", 168),
+    ("pf", 169),
+    ("np", 170)
   ]
