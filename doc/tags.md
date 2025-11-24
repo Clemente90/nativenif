@@ -9,6 +9,7 @@
 | `(array T N)`          | NifasmType                  | array type |
 | `(type D ...)`         | NifasmDecl                  | type declaration |
 | `(object ...)`         | NifasmType                  | object type definition |
+| `(union ...)`          | NifasmType                  | union type definition |
 | `(fld D T)`            | NifasmType                  | field definition |
 | `(proc D ...)`         | NifasmDecl                  | proc declaration |
 | `(params ...)`         | NifasmDecl                  | parameters block |

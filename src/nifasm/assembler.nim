@@ -303,6 +303,29 @@ proc parseType(n: var Cursor; scope: Scope; ctx: var GenContext): Type =
     error("Expected type", n)
 
 
+proc parseUnionBody(n: var Cursor; scope: Scope; ctx: var GenContext): Type =
+  var fields: seq[(string, Type)] = @[]
+  var maxSize = 0
+  inc n 
+  while n.kind != ParRi:
+    if n.kind == ParLe and n.tag == FldTagId:
+      inc n
+      if n.kind != SymbolDef: error("Expected field name", n)
+      let name = getSym(n)
+      inc n
+      let ftype = parseType(n, scope, ctx)
+      fields.add (name, ftype)
+      let size = sizeOf(ftype)
+      # Union size is the maximum of all field sizes
+      if size > maxSize:
+        maxSize = size
+      if n.kind != ParRi: error("Expected )", n)
+      inc n
+    else:
+      error("Expected field definition", n)
+  inc n
+  result = Type(kind: UnionT, fields: fields, size: maxSize)
+
 proc parseParams(n: var Cursor; scope: Scope; ctx: var GenContext): seq[Param] =
   # (params (param :name (reg) Type) ...)
   inc n # params
@@ -429,6 +452,9 @@ proc pass1(n: var Cursor; scope: Scope; ctx: var GenContext) =
           inc n
           if n.kind == ParLe and n.tag == ObjectTagId:
             let typ = parseObjectBody(n, scope, ctx)
+            scope.define(Symbol(name: name, kind: skType, typ: typ))
+          elif n.kind == ParLe and n.tag == UnionTagId:
+            let typ = parseUnionBody(n, scope, ctx)
             scope.define(Symbol(name: name, kind: skType, typ: typ))
           else:
             let typ = parseType(n, scope, ctx)
@@ -575,38 +601,40 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         error("Expected field name in dot expression", n)
       let fieldName = getSym(n)
       inc n
-
-      # Type check: base must be a pointer to an object, or a stack variable with object type
+      
+      # Type check: base must be a pointer to an object/union, or a stack variable with object/union type
       var objType: Type
       var baseReg: Register
       var baseDisp: int32 = 0
 
       if baseOp.typ.kind == TypeKind.PtrT:
-        # Base is a pointer to an object
+        # Base is a pointer to an object or union
         objType = baseOp.typ.base
-        if objType.kind != TypeKind.ObjectT:
-          error("Cannot access field of non-object type " & $objType, n)
+        if objType.kind notin {TypeKind.ObjectT, TypeKind.UnionT}:
+          error("Cannot access field of non-object/union type " & $objType, n)
         baseReg = baseOp.reg
-      elif baseOp.isMem and baseOp.typ.kind == TypeKind.ObjectT:
-        # Base is a stack-allocated object
+      elif baseOp.isMem and baseOp.typ.kind in {TypeKind.ObjectT, TypeKind.UnionT}:
+        # Base is a stack-allocated object or union
         objType = baseOp.typ
         baseReg = baseOp.mem.base
         baseDisp = baseOp.mem.displacement
       else:
-        error("dot requires pointer to object or stack object, got " & $baseOp.typ, n)
-
-      # Find field in object type
+        error("dot requires pointer to object/union or stack object/union, got " & $baseOp.typ, n)
+      
+      # Find field in object/union type
       var fieldOffset = 0
       var fieldType: Type = nil
       for (fname, ftype) in objType.fields:
         if fname == fieldName:
           fieldType = ftype
           break
-        fieldOffset += sizeOf(ftype)
-
+        # For unions, all fields are at offset 0; for objects, accumulate offsets
+        if objType.kind == TypeKind.ObjectT:
+          fieldOffset += sizeOf(ftype)
+      
       if fieldType == nil:
-        error("Field '" & fieldName & "' not found in object type", n)
-
+        error("Field '" & fieldName & "' not found in " & $objType.kind, n)
+      
       # Result is memory operand pointing to the field
       result.isMem = true
       result.mem = MemoryOperand(

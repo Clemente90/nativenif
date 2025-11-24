@@ -4,7 +4,7 @@ import tags, x86
 
 type
   TypeKind* = enum
-    ErrorT, VoidT, BoolT, IntT, UIntT, FloatT, PtrT, AptrT, ArrayT, ObjectT
+    ErrorT, VoidT, BoolT, IntT, UIntT, FloatT, PtrT, AptrT, ArrayT, ObjectT, UnionT
 
   Type* = ref object
     case kind*: TypeKind
@@ -14,7 +14,7 @@ type
     of ArrayT:
       elem*: Type
       len*: int64
-    of ObjectT:
+    of ObjectT, UnionT:
       fields*: seq[(string, Type)]
       size*: int
       align*: int
@@ -82,7 +82,7 @@ proc sizeOf*(t: Type): int =
   of IntT, UIntT, FloatT: t.bits div 8
   of PtrT, AptrT: 8 # x86-64
   of ArrayT: t.len.int * sizeOf(t.elem)
-  of ObjectT: t.size
+  of ObjectT, UnionT: t.size
 
 proc `$`*(t: Type): string =
   case t.kind
@@ -96,6 +96,7 @@ proc `$`*(t: Type): string =
   of AptrT: "(aptr " & $t.base & ")"
   of ArrayT: "(array " & $t.elem & " " & $t.len & ")"
   of ObjectT: "object" # Simplified
+  of UnionT: "union" # Simplified
 
 proc compatible*(want, got: Type): bool =
   if want == got: return true
@@ -109,10 +110,13 @@ proc compatible*(want, got: Type): bool =
   if want.kind == AptrT and got.kind == AptrT: return compatible(want.base, got.base)
   if want.kind == ArrayT and got.kind == ArrayT:
     return want.len == got.len and compatible(want.elem, got.elem)
-  # Object structural equivalence or name based?
+  # Object and union structural equivalence or name based?
   # Using reference equality for now (assuming unique type objects per declaration)
   # If we want structural:
   if want.kind == ObjectT and got.kind == ObjectT:
+    # For now, just check size or ref equality
+    return want == got
+  if want.kind == UnionT and got.kind == UnionT:
     # For now, just check size or ref equality
     return want == got
   return false

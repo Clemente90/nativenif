@@ -46,8 +46,13 @@ Compound types are `(ptr <ElementType>)`, `(aptr <ElementType>)`, `(array <Eleme
 
 ```
 (type :Name.0 (object (fld :Field.0 <Type 1>) ...) <optional_pragmas>)
-(type :Name.1 (proc <ReturnType> <Type 1> <Type 2> ...))
+(type :Name.1 (union (fld :Field.0 <Type 1>) ...) <optional_pragmas>)
+(type :Name.2 (proc <ReturnType> <Type 1> <Type 2> ...))
 ```
+
+**Object vs Union:**
+- `object`: Fields are laid out sequentially in memory. The size of an object is the sum of all field sizes. Each field has a different offset.
+- `union`: All fields overlay each other at offset 0. The size of a union is the maximum size of all fields. Writing to one field can affect the values read from other fields since they share the same memory.
 
 Calling conventions are not modelled via the type system; instead every function declaration is very explicit how it expects its parameter to be passed. Clobbered registers are part of this declaration! Custom calling conventions are an easy and effective way to get more speed from high level code. For example, an abort-like function should announce that no registers are clobbered so that the efficiency of the caller's register handling is not affected. This is a generalization of the idea that "leaf functions" can use registers more aggressively.
 

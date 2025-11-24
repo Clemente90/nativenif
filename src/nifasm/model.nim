@@ -146,6 +146,7 @@ type
     AptrT = (ord(AptrTagId), "aptr")  ## pointer to array of elements
     ArrayT = (ord(ArrayTagId), "array")  ## array type
     ObjectT = (ord(ObjectTagId), "object")  ## object type definition
+    UnionT = (ord(UnionTagId), "union")  ## union type definition
     FldT = (ord(FldTagId), "fld")  ## field definition
 
 proc rawTagIsNifasmType*(raw: TagEnum): bool {.inline.} =
