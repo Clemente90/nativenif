@@ -113,7 +113,7 @@ proc parseType(n: var Cursor; scope: Scope): Type =
 proc parseObjectBody(n: var Cursor; scope: Scope): Type =
   var fields: seq[(string, Type)] = @[]
   var offset = 0
-  inc n 
+  inc n
   while n.kind != ParRi:
     if n.kind == ParLe and n.tag == FldTagId:
       inc n
@@ -140,7 +140,7 @@ proc parseParams(n: var Cursor; scope: Scope): seq[Param] =
       if n.kind != SymbolDef: error("Expected param name", n)
       let name = getSym(n)
       inc n
-      
+
       # (reg) or (s) location
       var reg = InvalidTagId
       var onStack = false
@@ -163,10 +163,10 @@ proc parseParams(n: var Cursor; scope: Scope): seq[Param] =
           inc n
       else:
         error("Expected location", n)
-        
+
       let typ = parseType(n, scope)
       result.add Param(name: name, typ: typ, reg: reg, onStack: onStack)
-      
+
       if n.kind != ParRi: error("Expected )", n)
       inc n
     else:
@@ -178,7 +178,7 @@ proc parseResult(n: var Cursor; scope: Scope): seq[Param] =
   if n.kind == ParLe and n.tag == ResultTagId:
     inc n
     # if it's a block of results or a single declaration?
-    # "result value declaration". 
+    # "result value declaration".
     # Usually return values are just (ret :name (loc) Type)
     # Let's try parsing one.
     if n.kind != SymbolDef: error("Expected result name", n)
@@ -223,22 +223,22 @@ proc pass1Proc(n: var Cursor; scope: Scope) =
   if n.kind != SymbolDef: error("Expected proc name", n)
   let name = getSym(n)
   inc n
-  
+
   var sig = Signature(params: @[], result: @[], clobbers: {})
-  
+
   # Parse params
   if n.kind == ParLe and n.tag == ParamsTagId:
     sig.params = parseParams(n, scope)
-  
+
   # Parse result
   if n.kind == ParLe and n.tag == ResultTagId:
      var r = parseResult(n, scope)
      sig.result = r
-  
+
   # Parse clobber
   if n.kind == ParLe and n.tag == ClobberTagId:
     sig.clobbers = parseClobbers(n)
-    
+
   let sym = Symbol(name: name, kind: skProc, sig: sig)
   scope.define(sym)
 
@@ -266,7 +266,7 @@ proc pass1(n: var Cursor; scope: Scope) =
         of ProcTagId:
           # (proc :Name (params ...) (result ...) (clobber ...) (body ...))
           pass1Proc(n, scope)
-          
+
           n = start
           skip n
         of RodataTagId:
@@ -309,6 +309,7 @@ type
     clobbered: set[Register] # Registers clobbered in current flow
     slots: SlotManager
     ssizePatches: seq[int]
+    tlsOffset: int  # Current TLS offset for thread-local variables
 
   Operand = object
     reg: Register
@@ -325,18 +326,18 @@ proc genInst(n: var Cursor; ctx: var GenContext)
 proc pass2Proc(n: var Cursor; ctx: var GenContext) =
   let oldScope = ctx.scope
   ctx.scope = newScope(oldScope)
-  
+
   inc n
   let name = getSym(n)
   ctx.procName = name
-  
+
   # Find/Create label for proc
   let sym = oldScope.lookup(name)
   if sym.offset == -1:
      let lab = ctx.buf.createLabel()
      sym.offset = int(lab)
   ctx.buf.defineLabel(LabelId(sym.offset))
-  
+
   # Initialize stack context
   ctx.slots = initSlotManager()
   ctx.ssizePatches = @[]
@@ -360,13 +361,13 @@ proc pass2Proc(n: var Cursor; ctx: var GenContext) =
     inc n
   if n.kind != ParRi: error("Expected ) at end of proc", n)
   inc n
-  
+
   # Check that all declared cfvars were used exactly once
   for cfvarName, cfvarSym in ctx.scope.syms:
     if cfvarSym.kind == skCfvar:
       if not cfvarSym.used:
         quit "[Error] Control flow variable '" & cfvarName & "' declared but never used in proc " & ctx.procName
-  
+
   # Patch ssize
   let alignedStackSize = (ctx.slots.stackSize + 15) and not 15
   for pos in ctx.ssizePatches:
@@ -418,17 +419,17 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       # (dot <base> <fieldname>)
       inc n
       var baseOp = parseOperand(n, ctx)
-      
+
       if n.kind != Symbol and n.kind != SymbolDef:
         error("Expected field name in dot expression", n)
       let fieldName = getSym(n)
       inc n
-      
+
       # Type check: base must be a pointer to an object, or a stack variable with object type
       var objType: Type
       var baseReg: Register
       var baseDisp: int32 = 0
-      
+
       if baseOp.typ.kind == TypeKind.PtrT:
         # Base is a pointer to an object
         objType = baseOp.typ.base
@@ -442,7 +443,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         baseDisp = baseOp.mem.displacement
       else:
         error("dot requires pointer to object or stack object, got " & $baseOp.typ, n)
-      
+
       # Find field in object type
       var fieldOffset = 0
       var fieldType: Type = nil
@@ -451,10 +452,10 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
           fieldType = ftype
           break
         fieldOffset += sizeOf(ftype)
-      
+
       if fieldType == nil:
         error("Field '" & fieldName & "' not found in object type", n)
-      
+
       # Result is memory operand pointing to the field
       result.isMem = true
       result.mem = MemoryOperand(
@@ -463,7 +464,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         hasIndex: false
       )
       result.typ = Type(kind: TypeKind.PtrT, base: fieldType)
-      
+
       if n.kind != ParRi: error("Expected ) after dot expression", n)
       inc n
     elif t == AtTagId:
@@ -471,16 +472,16 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       inc n
       var baseOp = parseOperand(n, ctx)
       var indexOp = parseOperand(n, ctx)
-      
+
       # Type check: index must be an integer
       if not isIntegerType(indexOp.typ):
         error("Array index must be integer type, got " & $indexOp.typ, n)
-      
+
       # Type check: base must be aptr or stack array
       var elemType: Type
       var baseReg: Register
       var baseDisp: int32 = 0
-      
+
       if baseOp.typ.kind == TypeKind.AptrT:
         # Base is an array pointer
         elemType = baseOp.typ.base
@@ -492,7 +493,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         baseDisp = baseOp.mem.displacement
       else:
         error("at requires aptr or stack array, got " & $baseOp.typ, n)
-      
+
       # Check if index is immediate or register
       if indexOp.isImm:
         # Immediate index: compute offset directly
@@ -510,7 +511,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         let elemSize = sizeOf(elemType)
         if elemSize notin [1, 2, 4, 8]:
           error("Element size " & $elemSize & " not supported for scaled indexing (must be 1, 2, 4, or 8)", n)
-        
+
         result.isMem = true
         result.mem = MemoryOperand(
           base: baseReg,
@@ -519,9 +520,9 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
           displacement: baseDisp,
           hasIndex: true
         )
-      
+
       result.typ = Type(kind: TypeKind.PtrT, base: elemType)
-      
+
       if n.kind != ParRi: error("Expected ) after at expression", n)
       inc n
     elif t == LabTagId:
@@ -549,18 +550,18 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
     elif t == MemTagId:
       # (mem <address-expr>) or (mem <base> <offset>) or (mem <base> <index> <scale>) etc
       inc n
-      
+
       # Check if first child is an address expression (dot/at) or explicit addressing
       if n.kind == ParLe and (n.tag == DotTagId or n.tag == AtTagId):
         # Wrapped address expression: (mem (dot ...) or (mem (at ...))
         var addrOp = parseOperand(n, ctx)
         if not addrOp.isMem:
           error("mem requires address expression", n)
-        
+
         # Dereference the pointer type
         if addrOp.typ.kind != TypeKind.PtrT:
           error("mem requires pointer type, got " & $addrOp.typ, n)
-        
+
         result = addrOp
         result.typ = addrOp.typ.base  # Dereference: ptr T -> T
       else:
@@ -568,12 +569,12 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         var baseOp = parseOperand(n, ctx)
         if baseOp.isImm or baseOp.isMem:
           error("mem base must be a register", n)
-        
+
         var displacement: int32 = 0
         var hasIndex = false
         var indexReg: Register = RAX
         var scale: int = 1
-        
+
         # Check for offset
         if n.kind == IntLit or n.kind == Symbol:
           if n.kind == IntLit:
@@ -605,21 +606,21 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
                 of R15TagId: R15
                 else: RAX
               inc n
-              
+
               # Check for scale
               if n.kind == IntLit:
                 scale = int(getInt(n))
                 if scale notin [1, 2, 4, 8]:
                   error("mem scale must be 1, 2, 4, or 8", n)
                 inc n
-                
+
                 # Check for displacement after scale
                 if n.kind == IntLit:
                   displacement = int32(getInt(n))
                   inc n
             else:
               error("Expected index register or offset in mem", n)
-        
+
         result.isMem = true
         result.mem = MemoryOperand(
           base: baseOp.reg,
@@ -630,7 +631,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         )
         # Type is unknown for explicit addressing
         result.typ = TypeInt64  # Default assumption
-      
+
       if n.kind != ParRi: error("Expected ) after mem", n)
       inc n
     elif t == SsizeTagId:
@@ -678,11 +679,11 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
           of R14TagId: R14
           of R15TagId: R15
           else: RAX
-      
+
         # Check if clobbered
         if result.reg in ctx.clobbered:
           error("Access to variable '" & name & "' in register " & $result.reg & " which was clobbered", n)
-        
+
       result.typ = sym.typ
       inc n
     elif sym != nil and sym.kind == skLabel:
@@ -701,18 +702,19 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       result.typ = TypeUInt64 # Address of gvar
       inc n
     elif sym != nil and sym.kind == skTvar:
-      # Accessing thread local
-      # Usually requires FS segment access.
-      # For now, treat as address relative to something?
-      # Or maybe just error out if accessed directly without special instruction?
-      # Nifasm might assume direct access means address?
-      # Usually we need `mov rax, [fs:offset]` or similar.
-      # But here we return an Operand.
-      # If we return `isMem`, we need base/index/scale/disp.
-      # FS base is not a GPR.
-      # Let's assume we return a label/offset and the instruction generation handles FS prefix?
-      # Or maybe we can't support it in `Operand` directly yet.
-      error("Direct access to thread local '" & name & "' not fully supported in operands yet", n)
+      # Accessing thread local variable via FS segment
+      # On x86-64 Linux, TLS variables are accessed via FS segment
+      # The offset is stored in sym.offset (allocated in pass2)
+      # Use RBP as base register (standard for offset-only addressing)
+      result.isMem = true
+      result.mem = MemoryOperand(
+        base: RBP,  # RBP allows displacement-only addressing
+        displacement: int32(sym.offset),
+        hasIndex: false,
+        useFsSegment: true  # Use FS segment register
+      )
+      result.typ = sym.typ
+      inc n
     else:
       error("Unknown or invalid symbol: " & name, n)
   else:
@@ -755,6 +757,17 @@ proc parseDest(n: var Cursor; ctx: var GenContext): Operand =
        else:
          error("Variable has no location", n)
        inc n
+    elif sym != nil and sym.kind == skTvar:
+       # Writing to thread local variable via FS segment
+       result.isMem = true
+       result.mem = MemoryOperand(
+         base: RBP,  # RBP allows displacement-only addressing
+         displacement: int32(sym.offset),
+         hasIndex: false,
+         useFsSegment: true  # Use FS segment register
+       )
+       result.typ = sym.typ
+       inc n
     else:
        error("Expected variable or register as destination", n)
   else:
@@ -789,7 +802,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
   if n.kind != ParLe: error("Expected instruction", n)
   let tag = n.tag
   let start = n
-  
+
   if tag == CallTagId:
     if ctx.inCall: error("Nested calls are not allowed", n)
     ctx.inCall = true
@@ -801,7 +814,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     let sym = ctx.scope.lookup(name)
     if sym == nil or sym.kind != skProc: error("Unknown proc: " & name, n)
     inc n
-    
+
     # Parse arguments
     var args: Table[string, Operand]
     while n.kind == ParLe:
@@ -816,7 +829,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
         inc n
       else:
         error("Expected (mov arg val) in call", n)
-        
+
     # Validate arguments against signature
     let sig = sym.sig
     for param in sig.params:
@@ -824,7 +837,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
         error("Missing argument: " & param.name, n)
       let arg = args[param.name]
       checkType(param.typ, arg.typ, start)
-      
+
       var paramReg = RAX # Default
       if param.onStack:
         # Argument is on stack.
@@ -863,8 +876,8 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
         of RcxTagId, R2TagId: paramReg = RCX
         of R8TagId: paramReg = R8
         of R9TagId: paramReg = R9
-        else: discard 
-        
+        else: discard
+
         if arg.isSsize:
            ctx.buf.emitMovImmToReg32(paramReg, 0)
            ctx.ssizePatches.add(ctx.buf.data.len - 4)
@@ -874,64 +887,64 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
           ctx.buf.emitMov(paramReg, arg.mem)
         elif arg.reg != paramReg:
           ctx.buf.emitMov(paramReg, arg.reg)
-        
+
     # Clobber registers
     ctx.clobbered.incl(sig.clobbers)
-    
+
     var labId: LabelId
     if sym.offset == -1:
        labId = ctx.buf.createLabel()
        sym.offset = int(labId)
     else:
        labId = LabelId(sym.offset)
-       
+
     ctx.buf.emitCall(labId)
-    
+
     if n.kind != ParRi: error("Expected ) after call", n)
     inc n
     return
 
   if tag == IteTagId:
     inc n
-    
+
     # Check if condition is a cfvar (symbol) or a hardware flag (parens)
     let lElse = ctx.buf.createLabel()
     let lEnd = ctx.buf.createLabel()
-    
+
     # Save clobbered state
     let oldClobbered = ctx.clobbered
-    
+
     if n.kind == Symbol:
       # Control flow variable: (ite cfvar ...)
       let name = getSym(n)
       let sym = ctx.scope.lookup(name)
       if sym == nil or sym.kind != skCfvar: error("Expected cfvar in ite condition: " & name, n)
-      
+
       # Check if this cfvar has already been used
       if sym.used:
         error("Control flow variable '" & name & "' used more than once", n)
       sym.used = true
-      
+
       inc n
-      
+
       # When using a cfvar in ite, we don't emit any jump here.
       # The cfvar's label should be defined at the start of the "then" branch.
       # If jtrue was called, it jumped directly to the "then" branch.
       # If jtrue was NOT called, execution falls through to the "else" branch.
-      
+
       # We need to emit an unconditional jump to else before the then branch
       ctx.buf.emitJmp(lElse)
-      
+
       # Define the cfvar's label here (start of then branch)
       ctx.buf.defineLabel(LabelId(sym.offset))
-      
+
     elif n.kind == ParLe:
       # Hardware flag: (ite (flag) ...)
       let condTag = n.tag
       inc n
       if n.kind != ParRi: error("Expected ) after cond", n)
       inc n
-      
+
       case condTag
       of OfTagId: ctx.buf.emitJno(lElse)
       of NoTagId: ctx.buf.emitJo(lElse)
@@ -946,55 +959,55 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
       else: error("Unsupported condition: " & $condTag, n)
     else:
       error("Expected cfvar or flag condition in ite", n)
-    
+
     genStmt(n, ctx) # Then block
     # Clobbered state propagates?
     # Control flow merge: union of clobbered sets?
     # If a register is clobbered in THEN but not ELSE, it is clobbered after? Yes.
     let thenClobbered = ctx.clobbered
-    
+
     ctx.buf.emitJmp(lEnd)
-    
+
     ctx.clobbered = oldClobbered # Reset for Else
     ctx.buf.defineLabel(lElse)
     genStmt(n, ctx) # Else block
     let elseClobbered = ctx.clobbered
-    
+
     ctx.buf.defineLabel(lEnd)
-    
+
     # Merge clobbered
     ctx.clobbered = thenClobbered + elseClobbered
-    
+
     if n.kind != ParRi: error("Expected ) after ite", n)
     inc n
     return
 
   if tag == LoopTagId:
     inc n
-    
+
     # Pre-loop
     genStmt(n, ctx)
     let lStart = ctx.buf.createLabel()
     let lEnd = ctx.buf.createLabel()
-    
+
     ctx.buf.defineLabel(lStart)
-    
+
     if n.kind != ParLe: error("Expected condition", n)
     let condTag = n.tag
     inc n
     if n.kind != ParRi: error("Expected ) after cond", n)
     inc n
-    
+
     case condTag
     of ZfTagId: ctx.buf.emitJne(lEnd)
     of NzTagId: ctx.buf.emitJe(lEnd)
     else: error("Unsupported loop condition: " & $condTag, n)
-    
+
     # Body
     genStmt(n, ctx)
     ctx.buf.emitJmp(lStart)
     ctx.buf.defineLabel(lEnd)
-    
+
     # Loop body clobbers propagate
     # But we might execute loop 0 times?
     # If it's a while loop check at start (which this seems to be? No, structure is (loop pre cond post)?)
@@ -1007,7 +1020,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     # So union with pre-loop state?
     # But `ctx.clobbered` accumulates.
     # So whatever happened in body is added.
-    
+
     if n.kind != ParRi: error("Expected ) after loop", n)
     inc n
     return
@@ -1018,13 +1031,13 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     if n.kind != SymbolDef: error("Expected cfvar name", n)
     let name = getSym(n)
     inc n
-    
+
     # Control flow variables are always virtual (bool type, never materialized)
     # We create a label for when this cfvar becomes "true"
     let cfvarLabel = ctx.buf.createLabel()
     let sym = Symbol(name: name, kind: skCfvar, typ: TypeBool, offset: int(cfvarLabel), used: false)
     ctx.scope.define(sym)
-    
+
     if n.kind != ParRi: error("Expected )", n)
     inc n
     return
@@ -1055,14 +1068,14 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     else:
       error("Expected location", n)
     let typ = parseType(n, ctx.scope)
-    
+
     let sym = Symbol(name: name, kind: skVar, typ: typ)
     if onStack:
        sym.onStack = true
        sym.offset = ctx.slots.allocSlot(typ)
     else:
        sym.reg = reg
-       
+
     ctx.scope.define(sym)
 
     if n.kind != ParRi: error("Expected )", n)
@@ -1076,25 +1089,25 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     inc n
     var jumpTarget: LabelId
     var firstCfvar = true
-    
+
     while n.kind == Symbol:
       let name = getSym(n)
       let sym = ctx.scope.lookup(name)
       if sym == nil: error("Unknown cfvar: " & name, n)
       if sym.kind != skCfvar: error("Symbol is not a cfvar: " & name, n)
-      
+
       if firstCfvar:
         jumpTarget = LabelId(sym.offset)
         firstCfvar = false
       # For multiple cfvars, they all jump to the same place (first one's target)
       # This matches the semantics where all are set to true together
       inc n
-    
+
     if firstCfvar: error("jtrue requires at least one cfvar", start)
-    
+
     # Emit unconditional jump to the cfvar's target label
     ctx.buf.emitJmp(jumpTarget)
-    
+
     if n.kind != ParRi: error("Expected )", n)
     inc n
     return
@@ -1105,13 +1118,13 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     let name = getSym(n)
     let sym = ctx.scope.lookup(name)
     if sym == nil: error("Unknown variable to kill: " & name, n)
-    
+
     if sym.onStack:
       ctx.slots.killSlot(sym.offset, sym.typ)
-      
+
     # Remove from scope to ensure it's not used again
     ctx.scope.undefine(name)
-    
+
     inc n
     if n.kind != ParRi: error("Expected )", n)
     inc n
@@ -1123,7 +1136,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
   of MovTagId:
     let dest = parseDest(n, ctx)
     let op = parseOperand(n, ctx)
-    
+
     if dest.isMem:
        if op.isImm:
          # x86 supports mov r/m64, imm32 (sign extended)
@@ -1134,7 +1147,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
              # Assume immediate fits 32-bit or error?
              # "MOV r/m64, imm32" (C7 /0)
              # I'll assume it fits or implement `emitMov(mem, imm)`.
-             # Since I can't easily add to x86.nim right now without another round, 
+             # Since I can't easily add to x86.nim right now without another round,
              # I'll raise error for mem, imm if not supported.
              # Wait, I can use `emitMovImmToReg` if I have a scratch register? No.
              error("Moving immediate to memory not fully supported yet (requires emitMovImmToMem)", n)
@@ -1161,16 +1174,16 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
         ctx.buf.emitMov(dest.reg, op.mem)
       else:
         ctx.buf.emitMov(dest.reg, op.reg)
-        
+
   of AddTagId:
     let dest = parseDest(n, ctx)
     let op = parseOperand(n, ctx)
-    
+
     # Type check: add works on integers and pointers
     checkIntegerArithmetic(dest.typ, "add", start)
     checkIntegerArithmetic(op.typ, "add", start)
     checkCompatibleTypes(dest.typ, op.typ, "add", start)
-    
+
     if dest.isMem:
       if op.isImm:
         # ADD m64, imm32
@@ -1196,12 +1209,12 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
   of SubTagId:
     let dest = parseDest(n, ctx)
     let op = parseOperand(n, ctx)
-    
+
     # Type check: sub works on integers and pointers
     checkIntegerArithmetic(dest.typ, "sub", start)
     checkIntegerArithmetic(op.typ, "sub", start)
     checkCompatibleTypes(dest.typ, op.typ, "sub", start)
-    
+
     if dest.isMem:
       if op.isImm:
         error("Subtracting immediate from memory not supported yet", n)
@@ -1251,13 +1264,13 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     inc n
     if n.kind != ParRi: error("Expected )", n)
     inc n
-    
+
     inc n # (rax)
     if n.kind != ParLe or n.tag != RaxTagId: error("Expected (rax) for idiv", n)
     inc n
     if n.kind != ParRi: error("Expected )", n)
     inc n
-    
+
     let op = parseOperand(n, ctx)
     checkIntegerType(op.typ, "div", start)
     if op.isImm: error("DIV immediate not supported", n)
@@ -1271,13 +1284,13 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     inc n
     if n.kind != ParRi: error("Expected )", n)
     inc n
-    
+
     inc n # (rax)
     if n.kind != ParLe or n.tag != RaxTagId: error("Expected (rax) for idiv", n)
     inc n
     if n.kind != ParRi: error("Expected )", n)
     inc n
-    
+
     let op = parseOperand(n, ctx)
     checkIntegerType(op.typ, "idiv", start)
     if op.isImm: error("IDIV immediate not supported", n)
@@ -1789,21 +1802,21 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     checkFloatType(dest.typ, "addsd", start)
     checkFloatType(op.typ, "addsd", start)
     error("Scalar double precision arithmetic not fully supported yet", n)
-  
+
   of SubsdTagId:
     let dest = parseDest(n, ctx)
     let op = parseOperand(n, ctx)
     checkFloatType(dest.typ, "subsd", start)
     checkFloatType(op.typ, "subsd", start)
     error("Scalar double precision arithmetic not fully supported yet", n)
-  
+
   of MulsdTagId:
     let dest = parseDest(n, ctx)
     let op = parseOperand(n, ctx)
     checkFloatType(dest.typ, "mulsd", start)
     checkFloatType(op.typ, "mulsd", start)
     error("Scalar double precision arithmetic not fully supported yet", n)
-  
+
   of DivsdTagId:
     let dest = parseDest(n, ctx)
     let op = parseOperand(n, ctx)
@@ -1897,7 +1910,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
       ctx.buf.emitNeg(dest.mem)
     else:
        error("Unsupported instruction for LOCK prefix: " & $innerTag, n)
-       
+
     inc n
     if n.kind != ParRi: error("Expected ) after locked instruction", n)
     inc n
@@ -1915,7 +1928,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     else:
        if op.isImm: error("XCHG reg, immediate not supported", n)
        if op.isMem:
-          ctx.buf.emitXchg(op.mem, dest.reg) 
+          ctx.buf.emitXchg(op.mem, dest.reg)
        else:
           ctx.buf.emitXchg(dest.reg, op.reg)
 
@@ -1960,10 +1973,10 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
   of SfenceTagId: ctx.buf.emitSfence()
   of LfenceTagId: ctx.buf.emitLfence()
   of PauseTagId: ctx.buf.emitPause()
-  
+
   of ClflushTagId:
     let op = parseDest(n, ctx)
-    if op.isMem: error("CLFLUSH expects memory operand via register?", n) 
+    if op.isMem: error("CLFLUSH expects memory operand via register?", n)
     # emitClflush(Register). x86.nim takes Register. CLFLUSH m8. ModRM encodes address.
     # So it takes a register which holds the address? No, it takes an address.
     # x86.nim implementation: emitClflush(reg) -> 0F AE /7 (CLFLUSH m8).
@@ -1979,7 +1992,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
   of ClflushoptTagId:
     let op = parseDest(n, ctx)
     ctx.buf.emitClflushopt(op.reg)
-    
+
   of Prefetcht0TagId:
     let op = parseDest(n, ctx)
     ctx.buf.emitPrefetchT0(op.reg)
@@ -1995,7 +2008,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
 
   else:
     error("Unknown instruction: " & $tag, n)
-    
+
   if n.kind != ParRi: error("Expected ) at end of instruction", n)
   inc n
 
@@ -2036,9 +2049,22 @@ proc pass2(n: var Cursor; ctx: var GenContext) =
           for i in 0..<size: ctx.buf.add 0
           inc n # )
         of TvarTagId:
-          # Thread locals need special handling in ELF (TLS section)
-          # For now, we might just error or do something simple if not fully supporting TLS segments
-          error("TLS variables not fully supported in code generation yet", n)
+          # Thread local variable declaration
+          inc n
+          let name = getSym(n)
+          let sym = ctx.scope.lookup(name)
+          if sym == nil: error("TLS variable not found in scope: " & name, n)
+          inc n
+          # Skip type (already parsed in pass1)
+          skip n
+
+          # Allocate TLS offset for this variable
+          # TLS offsets start from 0 and grow upward
+          let size = slots.alignedSize(sym.typ)
+          sym.offset = ctx.tlsOffset
+          ctx.tlsOffset += size
+
+          inc n # )
         else:
           if rawTagIsNifasmInst(n.tag) or n.tag == IteTagId or n.tag == LoopTagId:
              genInst(n, ctx)
@@ -2070,14 +2096,14 @@ proc writeElf(a: var GenContext; outfile: string) =
 proc assemble*(filename, outfile: string) =
   var buf = parseFromFile(filename)
   var n = beginRead(buf)
-  
+
   var scope = newScope()
-  
+
   var n1 = n
   pass1(n1, scope)
-  
-  var ctx = GenContext(scope: scope, buf: initBuffer())
+
+  var ctx = GenContext(scope: scope, buf: initBuffer(), tlsOffset: 0)
   var n2 = n
   pass2(n2, ctx)
-  
+
   writeElf(ctx, outfile)
