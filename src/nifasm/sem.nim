@@ -45,12 +45,15 @@ type
     onStack*: bool    # True if (s)
     offset*: int      # Stack offset, label position, or field offset
     size*: int        # For stack slots
-    
+
     # Proc specific
     sig*: Signature
-    
+
     # Control flow variable tracking
     used*: bool       # For cfvar: has it been used in an ite?
+
+    # Foreign module tracking
+    isForeign*: bool  # True if this symbol comes from a foreign module
 
   Scope* = ref object
     parent*: Scope

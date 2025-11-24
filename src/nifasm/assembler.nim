@@ -1,6 +1,6 @@
 
 import std / [tables, streams, os]
-import "../../../nimony/src/lib" / [nifreader, nifstreams, nifcursors, bitabs, lineinfos]
+import "../../../nimony/src/lib" / [nifreader, nifstreams, nifcursors, bitabs, lineinfos, symparser]
 import tags, model
 import x86, elf
 import sem, slots
@@ -69,10 +69,202 @@ proc parseRegister(n: var Cursor): Register =
   if n.kind != ParRi: error("Expected ) after register", n)
   inc n
 
-proc parseType(n: var Cursor; scope: Scope): Type =
+type
+  LoadedModule = object
+    buf: TokenBuf
+    stream: nifstreams.Stream
+    loaded: bool  # True if already loaded into scope
+
+  GenContext = object
+    scope: Scope
+    buf: Buffer  # Code buffer (.text section)
+    bssBuf: Buffer  # BSS buffer (.bss section) for zero-initialized global variables
+    procName: string
+    inCall: bool
+    clobbered: set[Register] # Registers clobbered in current flow
+    slots: SlotManager
+    ssizePatches: seq[int]
+    tlsOffset: int  # Current TLS offset for thread-local variables
+    bssOffset: int  # Current offset in .bss section
+    modules: Table[string, LoadedModule]  # Cache of loaded foreign modules
+    baseDir: string  # Base directory for finding module files
+
+  Operand = object
+    reg: Register
+    typ: Type
+    isImm: bool
+    immVal: int64
+    isMem: bool
+    mem: MemoryOperand
+    isSsize: bool
+    label: LabelId
+
+proc parseType(n: var Cursor; scope: Scope; ctx: var GenContext): Type
+proc parseParams(n: var Cursor; scope: Scope; ctx: var GenContext): seq[Param]
+proc parseResult(n: var Cursor; scope: Scope; ctx: var GenContext): seq[Param]
+proc parseClobbers(n: var Cursor): set[Register]
+
+proc parseObjectBody(n: var Cursor; scope: Scope; ctx: var GenContext): Type =
+  var fields: seq[(string, Type)] = @[]
+  var offset = 0
+  inc n
+  while n.kind != ParRi:
+    if n.kind == ParLe and n.tag == FldTagId:
+      inc n
+      if n.kind != SymbolDef: error("Expected field name", n)
+      let name = getSym(n)
+      inc n
+      let ftype = parseType(n, scope, ctx)
+      fields.add (name, ftype)
+      let size = sizeOf(ftype)
+      offset += size
+      if n.kind != ParRi: error("Expected )", n)
+      inc n
+    else:
+      error("Expected field definition", n)
+  inc n
+  result = Type(kind: ObjectT, fields: fields, size: offset)
+
+proc loadForeignModule(ctx: var GenContext; modname: string; scope: Scope; n: Cursor) =
+  ## Load a foreign module and add its symbols to the scope
+  if ctx.modules.hasKey(modname):
+    if ctx.modules[modname].loaded:
+      return  # Already loaded
+  else:
+    # Try to find the module file
+    # Look for modname.s.nif (semchecked) or modname.nif
+    var modfile = ""
+    let semchecked = ctx.baseDir / modname & ".s.nif"
+    let plain = ctx.baseDir / modname & ".nif"
+
+    if fileExists(semchecked):
+      modfile = semchecked
+    elif fileExists(plain):
+      modfile = plain
+    else:
+      error("Foreign module file not found: " & modname & " (tried: " & semchecked & ", " & plain & ")", n)
+      return
+
+    # Open and parse the module
+    var stream = nifstreams.open(modfile)
+    discard processDirectives(stream.r)
+    let buf = fromStream(stream)
+    ctx.modules[modname] = LoadedModule(buf: buf, stream: stream, loaded: false)
+
+  # Parse the module's declarations
+  var n = beginRead(ctx.modules[modname].buf)
+  if n.kind == ParLe and n.tag == StmtsTagId:
+    inc n
+    while n.kind != ParRi:
+      if n.kind == ParLe:
+        let start = n
+        case n.tag
+        of TypeTagId:
+          inc n
+          if n.kind != SymbolDef:
+            skip n
+            continue
+          let name = getSym(n)
+          # Extract basename (without module suffix) for lookup
+          var basename = name
+          extractBasename(basename)
+          inc n
+          if n.kind == ParLe and n.tag == ObjectTagId:
+            let typ = parseObjectBody(n, scope, ctx)
+            let sym = Symbol(name: basename, kind: skType, typ: typ, isForeign: true)
+            scope.define(sym)
+          else:
+            let typ = parseType(n, scope, ctx)
+            let sym = Symbol(name: basename, kind: skType, typ: typ, isForeign: true)
+            scope.define(sym)
+          if n.kind != ParRi: skip n
+          inc n
+        of ProcTagId:
+          # Parse proc signature only (skip body)
+          inc n
+          if n.kind != SymbolDef:
+            skip n
+            continue
+          let name = getSym(n)
+          var basename = name
+          extractBasename(basename)
+          inc n
+
+          var sig = Signature(params: @[], result: @[], clobbers: {})
+
+          # Parse params
+          if n.kind == ParLe and n.tag == ParamsTagId:
+            sig.params = parseParams(n, scope, ctx)
+
+          # Parse result
+          if n.kind == ParLe and n.tag == ResultTagId:
+            var r = parseResult(n, scope, ctx)
+            sig.result = r
+
+          # Parse clobber
+          if n.kind == ParLe and n.tag == ClobberTagId:
+            sig.clobbers = parseClobbers(n)
+
+          let sym = Symbol(name: basename, kind: skProc, sig: sig, isForeign: true)
+          scope.define(sym)
+
+          # Skip body
+          n = start
+          skip n
+        of GvarTagId:
+          inc n
+          if n.kind != SymbolDef:
+            skip n
+            continue
+          let name = getSym(n)
+          var basename = name
+          extractBasename(basename)
+          inc n
+          let typ = parseType(n, scope, ctx)
+          let sym = Symbol(name: basename, kind: skGvar, typ: typ, isForeign: true)
+          scope.define(sym)
+          n = start
+          skip n
+        of TvarTagId:
+          inc n
+          if n.kind != SymbolDef:
+            skip n
+            continue
+          let name = getSym(n)
+          var basename = name
+          extractBasename(basename)
+          inc n
+          let typ = parseType(n, scope, ctx)
+          let sym = Symbol(name: basename, kind: skTvar, typ: typ, isForeign: true)
+          scope.define(sym)
+          n = start
+          skip n
+        else:
+          skip n
+      else:
+        skip n
+    inc n
+
+  ctx.modules[modname].loaded = true
+
+proc lookupWithAutoImport(ctx: var GenContext; scope: Scope; name: string; n: Cursor): Symbol =
+  ## Lookup a symbol, automatically loading foreign modules if needed
+  result = scope.lookup(name)
+  if result == nil:
+    # Check if this is a foreign symbol (has module suffix)
+    let modname = extractModule(name)
+    if modname != "":
+      # Load the foreign module
+      loadForeignModule(ctx, modname, scope, n)
+      # Try lookup again (with basename)
+      var basename = name
+      extractBasename(basename)
+      result = scope.lookup(basename)
+
+proc parseType(n: var Cursor; scope: Scope; ctx: var GenContext): Type =
   if n.kind == Symbol:
     let name = getSym(n)
-    let sym = scope.lookup(name)
+    let sym = lookupWithAutoImport(ctx, scope, name, n)
     if sym == nil or sym.kind != skType:
       error("Unknown type: " & name, n)
     result = sym.typ
@@ -93,13 +285,13 @@ proc parseType(n: var Cursor; scope: Scope): Type =
       result = Type(kind: FloatT, bits: int(getInt(n)))
       inc n
     of PtrTagId:
-      let base = parseType(n, scope)
+      let base = parseType(n, scope, ctx)
       result = Type(kind: PtrT, base: base)
     of AptrTagId:
-      let base = parseType(n, scope)
+      let base = parseType(n, scope, ctx)
       result = Type(kind: AptrT, base: base)
     of ArrayTagId:
-      let elem = parseType(n, scope)
+      let elem = parseType(n, scope, ctx)
       let len = getInt(n)
       inc n
       result = Type(kind: ArrayT, elem: elem, len: len)
@@ -110,28 +302,8 @@ proc parseType(n: var Cursor; scope: Scope): Type =
   else:
     error("Expected type", n)
 
-proc parseObjectBody(n: var Cursor; scope: Scope): Type =
-  var fields: seq[(string, Type)] = @[]
-  var offset = 0
-  inc n
-  while n.kind != ParRi:
-    if n.kind == ParLe and n.tag == FldTagId:
-      inc n
-      if n.kind != SymbolDef: error("Expected field name", n)
-      let name = getSym(n)
-      inc n
-      let ftype = parseType(n, scope)
-      fields.add (name, ftype)
-      let size = sizeOf(ftype)
-      offset += size
-      if n.kind != ParRi: error("Expected )", n)
-      inc n
-    else:
-      error("Expected field definition", n)
-  inc n
-  result = Type(kind: ObjectT, fields: fields, size: offset)
 
-proc parseParams(n: var Cursor; scope: Scope): seq[Param] =
+proc parseParams(n: var Cursor; scope: Scope; ctx: var GenContext): seq[Param] =
   # (params (param :name (reg) Type) ...)
   inc n # params
   while n.kind != ParRi:
@@ -164,7 +336,7 @@ proc parseParams(n: var Cursor; scope: Scope): seq[Param] =
       else:
         error("Expected location", n)
 
-      let typ = parseType(n, scope)
+      let typ = parseType(n, scope, ctx)
       result.add Param(name: name, typ: typ, reg: reg, onStack: onStack)
 
       if n.kind != ParRi: error("Expected )", n)
@@ -173,7 +345,7 @@ proc parseParams(n: var Cursor; scope: Scope): seq[Param] =
       error("Expected param declaration", n)
   inc n
 
-proc parseResult(n: var Cursor; scope: Scope): seq[Param] =
+proc parseResult(n: var Cursor; scope: Scope; ctx: var GenContext): seq[Param] =
   # (result (ret :name (reg) Type) ...)
   if n.kind == ParLe and n.tag == ResultTagId:
     inc n
@@ -198,7 +370,7 @@ proc parseResult(n: var Cursor; scope: Scope): seq[Param] =
         inc n
     else:
       error("Expected location", n)
-    let typ = parseType(n, scope)
+    let typ = parseType(n, scope, ctx)
     result.add Param(name: name, typ: typ, reg: reg)
     if n.kind != ParRi: error("Expected )", n)
     inc n
@@ -217,7 +389,7 @@ proc parseClobbers(n: var Cursor): set[Register] =
         error("Expected register in clobber list", n)
     inc n
 
-proc pass1Proc(n: var Cursor; scope: Scope) =
+proc pass1Proc(n: var Cursor; scope: Scope; ctx: var GenContext) =
   # (proc :Name (params ...) (result ...) (clobber ...) (body ...))
   inc n
   if n.kind != SymbolDef: error("Expected proc name", n)
@@ -228,11 +400,11 @@ proc pass1Proc(n: var Cursor; scope: Scope) =
 
   # Parse params
   if n.kind == ParLe and n.tag == ParamsTagId:
-    sig.params = parseParams(n, scope)
+    sig.params = parseParams(n, scope, ctx)
 
   # Parse result
   if n.kind == ParLe and n.tag == ResultTagId:
-     var r = parseResult(n, scope)
+     var r = parseResult(n, scope, ctx)
      sig.result = r
 
   # Parse clobber
@@ -242,7 +414,7 @@ proc pass1Proc(n: var Cursor; scope: Scope) =
   let sym = Symbol(name: name, kind: skProc, sig: sig)
   scope.define(sym)
 
-proc pass1(n: var Cursor; scope: Scope) =
+proc pass1(n: var Cursor; scope: Scope; ctx: var GenContext) =
   var n = n
   if n.kind == ParLe and n.tag == StmtsTagId:
     inc n
@@ -256,16 +428,16 @@ proc pass1(n: var Cursor; scope: Scope) =
           let name = getSym(n)
           inc n
           if n.kind == ParLe and n.tag == ObjectTagId:
-            let typ = parseObjectBody(n, scope)
+            let typ = parseObjectBody(n, scope, ctx)
             scope.define(Symbol(name: name, kind: skType, typ: typ))
           else:
-            let typ = parseType(n, scope)
+            let typ = parseType(n, scope, ctx)
             scope.define(Symbol(name: name, kind: skType, typ: typ))
           if n.kind != ParRi: error("Expected ) at end of type decl", n)
           inc n
         of ProcTagId:
           # (proc :Name (params ...) (result ...) (clobber ...) (body ...))
-          pass1Proc(n, scope)
+          pass1Proc(n, scope, ctx)
 
           n = start
           skip n
@@ -281,7 +453,7 @@ proc pass1(n: var Cursor; scope: Scope) =
           if n.kind != SymbolDef: error("Expected gvar name", n)
           let name = getSym(n)
           inc n # skip name
-          let typ = parseType(n, scope)
+          let typ = parseType(n, scope, ctx)
           scope.define(Symbol(name: name, kind: skGvar, typ: typ))
           n = start
           skip n
@@ -290,7 +462,7 @@ proc pass1(n: var Cursor; scope: Scope) =
           if n.kind != SymbolDef: error("Expected tvar name", n)
           let name = getSym(n)
           inc n # skip name
-          let typ = parseType(n, scope)
+          let typ = parseType(n, scope, ctx)
           scope.define(Symbol(name: name, kind: skTvar, typ: typ))
           n = start
           skip n
@@ -299,29 +471,6 @@ proc pass1(n: var Cursor; scope: Scope) =
       else:
         skip n
     inc n
-
-type
-  GenContext = object
-    scope: Scope
-    buf: Buffer  # Code buffer (.text section)
-    bssBuf: Buffer  # BSS buffer (.bss section) for zero-initialized global variables
-    procName: string
-    inCall: bool
-    clobbered: set[Register] # Registers clobbered in current flow
-    slots: SlotManager
-    ssizePatches: seq[int]
-    tlsOffset: int  # Current TLS offset for thread-local variables
-    bssOffset: int  # Current offset in .bss section
-
-  Operand = object
-    reg: Register
-    typ: Type
-    isImm: bool
-    immVal: int64
-    isMem: bool
-    mem: MemoryOperand
-    isSsize: bool
-    label: LabelId
 
 proc genInst(n: var Cursor; ctx: var GenContext)
 
@@ -531,7 +680,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       inc n
       if n.kind != Symbol: error("Expected label usage", n)
       let name = getSym(n)
-      let sym = ctx.scope.lookup(name)
+      let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
       if sym == nil or sym.kind != skLabel: error("Unknown label: " & name, n)
       inc n
       if n.kind != ParRi: error("Expected )", n)
@@ -542,7 +691,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       result.typ = TypeUInt64 # Address
     elif t == CastTagId:
       inc n
-      let castType = parseType(n, ctx.scope)
+      let castType = parseType(n, ctx.scope, ctx)
       # Cast allows us to opt-out of type system, so we don't check against expectedType here
       var op = parseOperand(n, ctx, nil)
       op.typ = castType
@@ -585,7 +734,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
           elif n.kind == Symbol:
             # Could be index register
             let indexName = getSym(n)
-            let indexSym = ctx.scope.lookup(indexName)
+            let indexSym = lookupWithAutoImport(ctx, ctx.scope, indexName, n)
             if indexSym != nil and indexSym.kind == skVar and indexSym.reg != InvalidTagId:
               # This is the index register
               hasIndex = true
@@ -656,7 +805,7 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
         result.typ = TypeInt64 # Default
   elif n.kind == Symbol:
     let name = getSym(n)
-    let sym = ctx.scope.lookup(name)
+    let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
     if sym != nil and (sym.kind == skVar or sym.kind == skParam):
       if sym.onStack:
         result.isMem = true
@@ -699,6 +848,10 @@ proc parseOperand(n: var Cursor; ctx: var GenContext; expectedType: Type = nil):
       result.typ = TypeUInt64 # Address of rodata
       inc n
     elif sym != nil and sym.kind == skGvar:
+      # Global variable - return its address
+      # For foreign symbols, we can't generate code, but we can typecheck
+      if sym.isForeign:
+        error("Cannot access foreign global variable '" & name & "' directly (must be linked)", n)
       result.reg = RAX
       result.label = LabelId(sym.offset)
       result.typ = TypeUInt64 # Address of gvar
@@ -728,7 +881,7 @@ proc parseDest(n: var Cursor; ctx: var GenContext): Operand =
     result.typ = TypeInt64
   elif n.kind == Symbol:
     let name = getSym(n)
-    let sym = ctx.scope.lookup(name)
+    let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
     if sym != nil and sym.kind == skVar:
        if sym.onStack:
          result.isMem = true
@@ -813,8 +966,10 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     inc n
     if n.kind != Symbol: error("Expected proc symbol", n)
     let name = getSym(n)
-    let sym = ctx.scope.lookup(name)
+    let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
     if sym == nil or sym.kind != skProc: error("Unknown proc: " & name, n)
+    if sym.isForeign:
+      error("Cannot call foreign proc '" & name & "' (must be linked)", n)
     inc n
 
     # Parse arguments
@@ -919,7 +1074,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     if n.kind == Symbol:
       # Control flow variable: (ite cfvar ...)
       let name = getSym(n)
-      let sym = ctx.scope.lookup(name)
+      let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
       if sym == nil or sym.kind != skCfvar: error("Expected cfvar in ite condition: " & name, n)
 
       # Check if this cfvar has already been used
@@ -1069,7 +1224,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
         inc n
     else:
       error("Expected location", n)
-    let typ = parseType(n, ctx.scope)
+    let typ = parseType(n, ctx.scope, ctx)
 
     let sym = Symbol(name: name, kind: skVar, typ: typ)
     if onStack:
@@ -1094,7 +1249,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
 
     while n.kind == Symbol:
       let name = getSym(n)
-      let sym = ctx.scope.lookup(name)
+      let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
       if sym == nil: error("Unknown cfvar: " & name, n)
       if sym.kind != skCfvar: error("Symbol is not a cfvar: " & name, n)
 
@@ -1118,7 +1273,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     inc n
     if n.kind != Symbol: error("Expected symbol to kill", n)
     let name = getSym(n)
-    let sym = ctx.scope.lookup(name)
+    let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
     if sym == nil: error("Unknown variable to kill: " & name, n)
 
     if sym.onStack:
@@ -1747,7 +1902,7 @@ proc genInst(n: var Cursor; ctx: var GenContext) =
     inc n
     if n.kind != SymbolDef: error("Expected label name", n)
     let name = getSym(n)
-    let sym = ctx.scope.lookup(name)
+    let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
     # Label might not be defined yet if this is inside a proc body?
     # No, Pass 1 handles types/procs. Labels are local to procs?
     # Labels are typically declared in Pass 1?
@@ -2020,9 +2175,23 @@ proc pass2(n: var Cursor; ctx: var GenContext) =
     inc n
     while n.kind != ParRi:
       if n.kind == ParLe:
+        let start = n
         case n.tag
         of ProcTagId:
-          pass2Proc(n, ctx)
+          # Skip foreign procs - they're not code-generated
+          inc n
+          if n.kind != SymbolDef:
+            skip n
+            continue
+          let name = getSym(n)
+          let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
+          if sym != nil and sym.isForeign:
+            # Skip foreign proc body
+            n = start
+            skip n
+          else:
+            n = start
+            pass2Proc(n, ctx)
         of RodataTagId:
           inc n
           let name = getSym(n)
@@ -2039,8 +2208,10 @@ proc pass2(n: var Cursor; ctx: var GenContext) =
           # Global variable declaration - goes in .bss section (zero-initialized writable memory)
           inc n
           let name = getSym(n)
-          let sym = ctx.scope.lookup(name)
+          let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
           if sym == nil: error("Global variable not found in scope: " & name, n)
+          if sym.isForeign:
+            error("Cannot define foreign global variable '" & name & "'", n)
           inc n
           # Skip type (already parsed in pass1)
           skip n
@@ -2068,8 +2239,10 @@ proc pass2(n: var Cursor; ctx: var GenContext) =
           # Thread local variable declaration
           inc n
           let name = getSym(n)
-          let sym = ctx.scope.lookup(name)
+          let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
           if sym == nil: error("TLS variable not found in scope: " & name, n)
+          if sym.isForeign:
+            error("Cannot define foreign TLS variable '" & name & "'", n)
           inc n
           # Skip type (already parsed in pass1)
           skip n
@@ -2151,13 +2324,33 @@ proc assemble*(filename, outfile: string) =
   var buf = parseFromFile(filename)
   var n = beginRead(buf)
 
+  # Extract base directory from filename
+  let baseDir = filename.splitFile.dir
+
   var scope = newScope()
 
-  var n1 = n
-  pass1(n1, scope)
+  # Create a minimal ctx for pass1 (for foreign module loading)
+  var ctx = GenContext(
+    scope: scope,
+    buf: initBuffer(),
+    bssBuf: initBuffer(),
+    tlsOffset: 0,
+    bssOffset: 0,
+    modules: initTable[string, LoadedModule](),
+    baseDir: baseDir
+  )
 
-  var ctx = GenContext(scope: scope, buf: initBuffer(), bssBuf: initBuffer(), tlsOffset: 0, bssOffset: 0)
+  var n1 = n
+  pass1(n1, scope, ctx)
+
+  # Update ctx with proper buffers for pass2
+  ctx.buf = initBuffer()
+  ctx.bssBuf = initBuffer()
   var n2 = n
   pass2(n2, ctx)
 
   writeElf(ctx, outfile)
+
+  # Close all module streams
+  for module in ctx.modules.mvalues:
+    nifstreams.close(module.stream)
