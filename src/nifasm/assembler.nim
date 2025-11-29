@@ -3194,8 +3194,7 @@ proc pass2(n: Cursor; ctx: var GenContext) =
           # Skip foreign procs - they're not code-generated
           inc n
           if n.kind != SymbolDef:
-            skip n
-            continue
+            error("Expected symbol definition", n)
           let name = getSym(n)
           let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
           if sym != nil and sym.isForeign:
@@ -3270,13 +3269,9 @@ proc pass2(n: Cursor; ctx: var GenContext) =
         of ArchTagId:
           handleArch(n, ctx)
         else:
-          let instTag = tagToX64Inst(n.tag)
-          if instTag != NoX64Inst or n.tag == IteTagId or n.tag == LoopTagId:
-            genInst(n, ctx)
-          else:
-            skip n
+          genInst(n, ctx)
       else:
-        skip n
+        error("Expected instruction", n)
     inc n
 
 proc writeElf(a: var GenContext; outfile: string) =
