@@ -3,6 +3,8 @@
 
 import std/[strutils, tables]
 
+import buffers
+
 type
   # x86_64 64-bit general purpose registers
   Register* = enum
@@ -33,6 +35,14 @@ type
     id*: LabelId
     position*: int  # Position where label is defined
 
+  # Types of instructions requiring relocation/patching
+  # Since we intend to support mixed architectures ("fat binaries") we need to
+  # combine x86 and ARM64 instruction types here for this to work out.
+  RelocKind* = enum
+    rkCall, rkJmp, rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
+    rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp, rkLea
+    #rkB, rkBL, rkBEQ, rkBNE, rkCBZ, rkCBNZ, rkTBZ, rkTBNZ, rkADR, rkADRP
+
   # Relocation entry for optimization and patching
   RelocEntry* = object
     position*: int        # Position in buffer where instruction starts
@@ -40,14 +50,9 @@ type
     kind*: RelocKind      # Type of relocation/instruction
     originalSize*: int    # Original instruction size in bytes
 
-  # Types of instructions requiring relocation/patching
-  RelocKind* = enum
-    rkCall, rkJmp, rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
-    rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp, rkLea
-
   # Buffer for accumulating instruction bytes
   Buffer* = object
-    data*: seq[byte]
+    data*: Bytes
     relocs*: seq[RelocEntry]  # Track instructions needing relocation
     labels*: seq[LabelDef]    # Track label definitions
     nextLabelId*: int         # Next available label ID
@@ -56,50 +61,8 @@ type
 proc `==`*(a, b: LabelId): bool =
   int(a) == int(b)
 
-# Buffer operations
 proc initBuffer*(): Buffer =
-  result = Buffer(
-    data: @[],
-    relocs: @[],
-    labels: @[],
-    nextLabelId: 0
-  )
-
-proc add*(buf: var Buffer; b: byte) =
-  buf.data.add(b)
-
-proc addUint16*(buf: var Buffer; val: uint16) =
-  buf.add(byte(val and 0xFF))
-  buf.add(byte((val shr 8) and 0xFF))
-
-proc addUint32*(buf: var Buffer; val: uint32) =
-  buf.add(byte(val and 0xFF))
-  buf.add(byte((val shr 8) and 0xFF))
-  buf.add(byte((val shr 16) and 0xFF))
-  buf.add(byte((val shr 24) and 0xFF))
-
-proc addt32*(buf: var Buffer; val: int32) =
-  buf.addUint32(uint32(val))
-
-proc addt64*(buf: var Buffer; val: int64) =
-  buf.add(byte(val and 0xFF))
-  buf.add(byte((val shr 8) and 0xFF))
-  buf.add(byte((val shr 16) and 0xFF))
-  buf.add(byte((val shr 24) and 0xFF))
-  buf.add(byte((val shr 32) and 0xFF))
-  buf.add(byte((val shr 40) and 0xFF))
-  buf.add(byte((val shr 48) and 0xFF))
-  buf.add(byte((val shr 56) and 0xFF))
-
-proc len*(buf: Buffer): int =
-  ## Get the length of the buffer
-  buf.data.len
-
-proc `$`*(buf: Buffer): string =
-  result = ""
-  for i, b in buf.data:
-    if i > 0: result.add(" ")
-    result.add(b.toHex(2).toUpper())
+  result = Buffer(data: initBytes(), relocs: @[], labels: @[], nextLabelId: 0)
 
 # Label system functions
 proc createLabel*(buf: var Buffer): LabelId =
@@ -128,9 +91,9 @@ proc addReloc*(buf: var Buffer; position: int; target: LabelId; kind: RelocKind;
     originalSize: size
   ))
 
-proc getCurrentPosition*(buf: Buffer): int =
+proc getCurrentPosition*(buf: Bytes): int =
   ## Get the current position in the buffer
-  buf.data.len
+  buf.len
 
 proc calculateRelocDistance*(fromPos: int; toPos: int; kind: RelocKind = rkJmp): int =
   ## Calculate the distance for a relative instruction
@@ -178,7 +141,7 @@ proc encodeSIB*(scale: int; index: int; base: int): byte =
     else: 0b00
   byte((scaleBits shl 6) or ((index and 0x07) shl 3) or (base and 0x07))
 
-proc emitMem(dest: var Buffer; reg: int; mem: MemoryOperand) =
+proc emitMem(dest: var Bytes; reg: int; mem: MemoryOperand) =
   # Emit segment prefix if needed (FS = 0x64 for thread-local storage)
   if mem.useFsSegment:
     dest.add(0x64)  # FS segment override prefix
@@ -217,7 +180,7 @@ proc emitMem(dest: var Buffer; reg: int; mem: MemoryOperand) =
     dest.addt32(mem.displacement)
 
 # Core MOV instruction implementations
-proc emitMov*(dest: var Buffer; a, b: Register) =
+proc emitMov*(dest: var Bytes; a, b: Register) =
   ## Emit MOV instruction: MOV a, b (move from b to a)
   var rex = RexPrefix(w: true)
 
@@ -230,7 +193,7 @@ proc emitMov*(dest: var Buffer; a, b: Register) =
   dest.add(0x89)  # MOV r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitMov*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
+proc emitMov*(dest: var Bytes; reg: Register; mem: MemoryOperand) =
   ## Emit MOV instruction: MOV reg, mem (load)
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -243,7 +206,7 @@ proc emitMov*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
   dest.add(0x8B) # MOV r64, r/m64
   dest.emitMem(int(reg), mem)
 
-proc emitMov*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitMov*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit MOV instruction: MOV mem, reg (store)
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -256,7 +219,7 @@ proc emitMov*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x89) # MOV r/m64, r64
   dest.emitMem(int(reg), mem)
 
-proc emitMovImmToReg*(dest: var Buffer; reg: Register; imm: int64) =
+proc emitMovImmToReg*(dest: var Bytes; reg: Register; imm: int64) =
   ## Emit MOV instruction: MOV reg, imm
   var rex = RexPrefix(w: true)
 
@@ -272,7 +235,7 @@ proc emitMovImmToReg*(dest: var Buffer; reg: Register; imm: int64) =
   # Add 64-bit immediate value
   dest.addt64(imm)
 
-proc emitMovImmToReg32*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitMovImmToReg32*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit MOV instruction: MOV reg, imm32 (sign-extended to 64-bit)
   var rex = RexPrefix(w: true)
 
@@ -286,7 +249,7 @@ proc emitMovImmToReg32*(dest: var Buffer; reg: Register; imm: int32) =
   dest.addt32(imm)
 
 # Arithmetic instructions
-proc emitAdd*(dest: var Buffer; a, b: Register) =
+proc emitAdd*(dest: var Bytes; a, b: Register) =
   ## Emit ADD instruction: ADD a, b
   var rex = RexPrefix(w: true)
 
@@ -299,7 +262,7 @@ proc emitAdd*(dest: var Buffer; a, b: Register) =
   dest.add(0x01)  # ADD r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitAdd*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
+proc emitAdd*(dest: var Bytes; reg: Register; mem: MemoryOperand) =
   ## Emit ADD instruction: ADD reg, mem
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -312,7 +275,7 @@ proc emitAdd*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
   dest.add(0x03) # ADD r64, r/m64
   dest.emitMem(int(reg), mem)
 
-proc emitAdd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitAdd*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit ADD instruction: ADD mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -325,7 +288,7 @@ proc emitAdd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x01) # ADD r/m64, r64
   dest.emitMem(int(reg), mem)
 
-proc emitSub*(dest: var Buffer; a, b: Register) =
+proc emitSub*(dest: var Bytes; a, b: Register) =
   ## Emit SUB instruction: SUB a, b
   var rex = RexPrefix(w: true)
 
@@ -338,7 +301,7 @@ proc emitSub*(dest: var Buffer; a, b: Register) =
   dest.add(0x29)  # SUB r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitSub*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
+proc emitSub*(dest: var Bytes; reg: Register; mem: MemoryOperand) =
   ## Emit SUB instruction: SUB reg, mem
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -351,7 +314,7 @@ proc emitSub*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
   dest.add(0x2B) # SUB r64, r/m64
   dest.emitMem(int(reg), mem)
 
-proc emitSub*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitSub*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit SUB instruction: SUB mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -364,7 +327,7 @@ proc emitSub*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x29) # SUB r/m64, r64
   dest.emitMem(int(reg), mem)
 
-proc emitImul*(dest: var Buffer; a, b: Register) =
+proc emitImul*(dest: var Bytes; a, b: Register) =
   ## Emit IMUL instruction: IMUL a, b (signed multiply)
   var rex = RexPrefix(w: true)
 
@@ -378,7 +341,7 @@ proc emitImul*(dest: var Buffer; a, b: Register) =
   dest.add(0xAF)  # IMUL r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitImulImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitImulImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit IMUL instruction: IMUL reg, reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -392,7 +355,7 @@ proc emitImulImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.addt32(imm)
 
 # Additional arithmetic operations
-proc emitMul*(dest: var Buffer; reg: Register) =
+proc emitMul*(dest: var Bytes; reg: Register) =
   ## Emit MUL instruction: MUL reg (unsigned multiply)
   var rex = RexPrefix(w: true)
 
@@ -404,7 +367,7 @@ proc emitMul*(dest: var Buffer; reg: Register) =
   dest.add(0xF7)  # MUL r/m64 opcode
   dest.add(encodeModRM(amDirect, 4, int(reg)))  # /4 extension
 
-proc emitDiv*(dest: var Buffer; reg: Register) =
+proc emitDiv*(dest: var Bytes; reg: Register) =
   ## Emit DIV instruction: DIV reg (unsigned divide)
   var rex = RexPrefix(w: true)
 
@@ -416,7 +379,7 @@ proc emitDiv*(dest: var Buffer; reg: Register) =
   dest.add(0xF7)  # DIV r/m64 opcode
   dest.add(encodeModRM(amDirect, 6, int(reg)))  # /6 extension
 
-proc emitIdiv*(dest: var Buffer; reg: Register) =
+proc emitIdiv*(dest: var Bytes; reg: Register) =
   ## Emit IDIV instruction: IDIV reg (signed divide)
   var rex = RexPrefix(w: true)
 
@@ -428,7 +391,7 @@ proc emitIdiv*(dest: var Buffer; reg: Register) =
   dest.add(0xF7)  # IDIV r/m64 opcode
   dest.add(encodeModRM(amDirect, 7, int(reg)))  # /7 extension
 
-proc emitInc*(dest: var Buffer; reg: Register) =
+proc emitInc*(dest: var Bytes; reg: Register) =
   ## Emit INC instruction: INC reg (increment)
   var rex = RexPrefix(w: true)
 
@@ -440,7 +403,7 @@ proc emitInc*(dest: var Buffer; reg: Register) =
   dest.add(0xFF)  # INC r/m64 opcode
   dest.add(encodeModRM(amDirect, 0, int(reg)))  # /0 extension
 
-proc emitInc*(dest: var Buffer; mem: MemoryOperand) =
+proc emitInc*(dest: var Bytes; mem: MemoryOperand) =
   ## Emit INC instruction: INC mem
   var rex = RexPrefix(w: true)
   if needsRex(mem.base): rex.b = true
@@ -449,7 +412,7 @@ proc emitInc*(dest: var Buffer; mem: MemoryOperand) =
   dest.add(0xFF)
   dest.emitMem(0, mem)
 
-proc emitDec*(dest: var Buffer; reg: Register) =
+proc emitDec*(dest: var Bytes; reg: Register) =
   ## Emit DEC instruction: DEC reg (decrement)
   var rex = RexPrefix(w: true)
 
@@ -461,7 +424,7 @@ proc emitDec*(dest: var Buffer; reg: Register) =
   dest.add(0xFF)  # DEC r/m64 opcode
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
 
-proc emitDec*(dest: var Buffer; mem: MemoryOperand) =
+proc emitDec*(dest: var Bytes; mem: MemoryOperand) =
   ## Emit DEC instruction: DEC mem
   var rex = RexPrefix(w: true)
   if needsRex(mem.base): rex.b = true
@@ -470,7 +433,7 @@ proc emitDec*(dest: var Buffer; mem: MemoryOperand) =
   dest.add(0xFF)
   dest.emitMem(1, mem)
 
-proc emitNeg*(dest: var Buffer; reg: Register) =
+proc emitNeg*(dest: var Bytes; reg: Register) =
   ## Emit NEG instruction: NEG reg (negate)
   var rex = RexPrefix(w: true)
 
@@ -482,7 +445,7 @@ proc emitNeg*(dest: var Buffer; reg: Register) =
   dest.add(0xF7)  # NEG r/m64 opcode
   dest.add(encodeModRM(amDirect, 3, int(reg)))  # /3 extension
 
-proc emitNeg*(dest: var Buffer; mem: MemoryOperand) =
+proc emitNeg*(dest: var Bytes; mem: MemoryOperand) =
   ## Emit NEG instruction: NEG mem
   var rex = RexPrefix(w: true)
   if needsRex(mem.base): rex.b = true
@@ -491,7 +454,7 @@ proc emitNeg*(dest: var Buffer; mem: MemoryOperand) =
   dest.add(0xF7)
   dest.emitMem(3, mem)
 
-proc emitCmp*(dest: var Buffer; a, b: Register) =
+proc emitCmp*(dest: var Bytes; a, b: Register) =
   ## Emit CMP instruction: CMP a, b (compare)
   var rex = RexPrefix(w: true)
 
@@ -504,7 +467,7 @@ proc emitCmp*(dest: var Buffer; a, b: Register) =
   dest.add(0x39)  # CMP r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitCmp*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
+proc emitCmp*(dest: var Bytes; reg: Register; mem: MemoryOperand) =
   ## Emit CMP instruction: CMP reg, mem
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -517,7 +480,7 @@ proc emitCmp*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
   dest.add(0x3B) # CMP r64, r/m64
   dest.emitMem(int(reg), mem)
 
-proc emitCmp*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitCmp*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit CMP instruction: CMP mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -530,7 +493,7 @@ proc emitCmp*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x39) # CMP r/m64, r64
   dest.emitMem(int(reg), mem)
 
-proc emitTest*(dest: var Buffer; a, b: Register) =
+proc emitTest*(dest: var Bytes; a, b: Register) =
   ## Emit TEST instruction: TEST a, b (test)
   var rex = RexPrefix(w: true)
 
@@ -544,7 +507,7 @@ proc emitTest*(dest: var Buffer; a, b: Register) =
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
 # Arithmetic with immediate values
-proc emitAddImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitAddImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit ADD instruction: ADD reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -557,7 +520,7 @@ proc emitAddImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.add(encodeModRM(amDirect, 0, int(reg)))  # /0 extension
   dest.addt32(imm)
 
-proc emitSubImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitSubImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit SUB instruction: SUB reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -570,7 +533,7 @@ proc emitSubImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.add(encodeModRM(amDirect, 5, int(reg)))  # /5 extension
   dest.addt32(imm)
 
-proc emitAndImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitAndImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit AND instruction: AND reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -583,7 +546,7 @@ proc emitAndImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.add(encodeModRM(amDirect, 4, int(reg)))  # /4 extension
   dest.addt32(imm)
 
-proc emitOrImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitOrImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit OR instruction: OR reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -596,7 +559,7 @@ proc emitOrImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
   dest.addt32(imm)
 
-proc emitXorImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitXorImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit XOR instruction: XOR reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -609,7 +572,7 @@ proc emitXorImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.add(encodeModRM(amDirect, 6, int(reg)))  # /6 extension
   dest.addt32(imm)
 
-proc emitCmpImm*(dest: var Buffer; reg: Register; imm: int32) =
+proc emitCmpImm*(dest: var Bytes; reg: Register; imm: int32) =
   ## Emit CMP instruction: CMP reg, imm32
   var rex = RexPrefix(w: true)
 
@@ -623,7 +586,7 @@ proc emitCmpImm*(dest: var Buffer; reg: Register; imm: int32) =
   dest.addt32(imm)
 
 # Shift operations
-proc emitShl*(dest: var Buffer; reg: Register; count: int) =
+proc emitShl*(dest: var Bytes; reg: Register; count: int) =
   ## Emit SHL instruction: SHL reg, count (shift left)
   var rex = RexPrefix(w: true)
 
@@ -640,7 +603,7 @@ proc emitShl*(dest: var Buffer; reg: Register; count: int) =
     dest.add(encodeModRM(amDirect, 4, int(reg)))  # /4 extension
     dest.add(byte(count))
 
-proc emitShr*(dest: var Buffer; reg: Register; count: int) =
+proc emitShr*(dest: var Bytes; reg: Register; count: int) =
   ## Emit SHR instruction: SHR reg, count (shift right)
   var rex = RexPrefix(w: true)
 
@@ -657,7 +620,7 @@ proc emitShr*(dest: var Buffer; reg: Register; count: int) =
     dest.add(encodeModRM(amDirect, 5, int(reg)))  # /5 extension
     dest.add(byte(count))
 
-proc emitSal*(dest: var Buffer; reg: Register; count: int) =
+proc emitSal*(dest: var Bytes; reg: Register; count: int) =
   ## Emit SAL instruction: SAL reg, count (shift arithmetic left)
   var rex = RexPrefix(w: true)
 
@@ -674,7 +637,7 @@ proc emitSal*(dest: var Buffer; reg: Register; count: int) =
     dest.add(encodeModRM(amDirect, 6, int(reg)))  # /6 extension
     dest.add(byte(count))
 
-proc emitSar*(dest: var Buffer; reg: Register; count: int) =
+proc emitSar*(dest: var Bytes; reg: Register; count: int) =
   ## Emit SAR instruction: SAR reg, count (shift arithmetic right)
   var rex = RexPrefix(w: true)
 
@@ -692,7 +655,7 @@ proc emitSar*(dest: var Buffer; reg: Register; count: int) =
     dest.add(byte(count))
 
 # Rotate operations
-proc emitRol*(dest: var Buffer; reg: Register; count: int) =
+proc emitRol*(dest: var Bytes; reg: Register; count: int) =
   ## Emit ROL instruction: ROL reg, count (rotate left)
   var rex = RexPrefix(w: true)
 
@@ -709,7 +672,7 @@ proc emitRol*(dest: var Buffer; reg: Register; count: int) =
     dest.add(encodeModRM(amDirect, 0, int(reg)))  # /0 extension
     dest.add(byte(count))
 
-proc emitRor*(dest: var Buffer; reg: Register; count: int) =
+proc emitRor*(dest: var Bytes; reg: Register; count: int) =
   ## Emit ROR instruction: ROR reg, count (rotate right)
   var rex = RexPrefix(w: true)
 
@@ -726,7 +689,7 @@ proc emitRor*(dest: var Buffer; reg: Register; count: int) =
     dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
     dest.add(byte(count))
 
-proc emitRcl*(dest: var Buffer; reg: Register; count: int) =
+proc emitRcl*(dest: var Bytes; reg: Register; count: int) =
   ## Emit RCL instruction: RCL reg, count (rotate left through carry)
   var rex = RexPrefix(w: true)
 
@@ -743,7 +706,7 @@ proc emitRcl*(dest: var Buffer; reg: Register; count: int) =
     dest.add(encodeModRM(amDirect, 2, int(reg)))  # /2 extension
     dest.add(byte(count))
 
-proc emitRcr*(dest: var Buffer; reg: Register; count: int) =
+proc emitRcr*(dest: var Bytes; reg: Register; count: int) =
   ## Emit RCR instruction: RCR reg, count (rotate right through carry)
   var rex = RexPrefix(w: true)
 
@@ -761,7 +724,7 @@ proc emitRcr*(dest: var Buffer; reg: Register; count: int) =
     dest.add(byte(count))
 
 # Bit manipulation operations
-proc emitNot*(dest: var Buffer; reg: Register) =
+proc emitNot*(dest: var Bytes; reg: Register) =
   ## Emit NOT instruction: NOT reg (bitwise not)
   var rex = RexPrefix(w: true)
 
@@ -773,7 +736,7 @@ proc emitNot*(dest: var Buffer; reg: Register) =
   dest.add(0xF7)  # NOT r/m64 opcode
   dest.add(encodeModRM(amDirect, 2, int(reg)))  # /2 extension
 
-proc emitNot*(dest: var Buffer; mem: MemoryOperand) =
+proc emitNot*(dest: var Bytes; mem: MemoryOperand) =
   ## Emit NOT instruction: NOT mem
   var rex = RexPrefix(w: true)
   if needsRex(mem.base): rex.b = true
@@ -782,7 +745,7 @@ proc emitNot*(dest: var Buffer; mem: MemoryOperand) =
   dest.add(0xF7)
   dest.emitMem(2, mem)
 
-proc emitBsf*(dest: var Buffer; destReg, srcReg: Register) =
+proc emitBsf*(dest: var Bytes; destReg, srcReg: Register) =
   ## Emit BSF instruction: BSF destReg, srcReg (bit scan forward)
   var rex = RexPrefix(w: true)
 
@@ -796,7 +759,7 @@ proc emitBsf*(dest: var Buffer; destReg, srcReg: Register) =
   dest.add(0xBC)  # BSF r64, r/m64 opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitBsr*(dest: var Buffer; destReg, srcReg: Register) =
+proc emitBsr*(dest: var Bytes; destReg, srcReg: Register) =
   ## Emit BSR instruction: BSR destReg, srcReg (bit scan reverse)
   var rex = RexPrefix(w: true)
 
@@ -810,7 +773,7 @@ proc emitBsr*(dest: var Buffer; destReg, srcReg: Register) =
   dest.add(0xBD)  # BSR r64, r/m64 opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitBt*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBt*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit BT instruction: BT reg, bit (bit test)
   var rex = RexPrefix(w: true)
 
@@ -824,7 +787,7 @@ proc emitBt*(dest: var Buffer; reg: Register; bit: int) =
   dest.add(encodeModRM(amDirect, 4, int(reg)))  # /4 extension
   dest.add(byte(bit))
 
-proc emitBtc*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBtc*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit BTC instruction: BTC reg, bit (bit test and complement)
   var rex = RexPrefix(w: true)
 
@@ -838,7 +801,7 @@ proc emitBtc*(dest: var Buffer; reg: Register; bit: int) =
   dest.add(encodeModRM(amDirect, 7, int(reg)))  # /7 extension
   dest.add(byte(bit))
 
-proc emitBtr*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBtr*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit BTR instruction: BTR reg, bit (bit test and reset)
   var rex = RexPrefix(w: true)
 
@@ -852,7 +815,7 @@ proc emitBtr*(dest: var Buffer; reg: Register; bit: int) =
   dest.add(encodeModRM(amDirect, 6, int(reg)))  # /6 extension
   dest.add(byte(bit))
 
-proc emitBts*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBts*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit BTS instruction: BTS reg, bit (bit test and set)
   var rex = RexPrefix(w: true)
 
@@ -880,78 +843,78 @@ proc needsRex*(reg: XmmRegister): bool =
   int(reg) >= 8
 
 # x87 FPU operations
-proc emitFld*(dest: var Buffer; reg: FpuRegister) =
+proc emitFld*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FLD instruction: FLD reg (load floating point)
   dest.add(0xD9)  # FLD opcode
   dest.add(encodeModRM(amDirect, 0, int(reg)))  # /0 extension
 
-proc emitFst*(dest: var Buffer; reg: FpuRegister) =
+proc emitFst*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FST instruction: FST reg (store floating point)
   dest.add(0xDD)  # FST opcode
   dest.add(encodeModRM(amDirect, 2, int(reg)))  # /2 extension
 
-proc emitFstp*(dest: var Buffer; reg: FpuRegister) =
+proc emitFstp*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FSTP instruction: FSTP reg (store floating point and pop)
   dest.add(0xDD)  # FSTP opcode
   dest.add(encodeModRM(amDirect, 3, int(reg)))  # /3 extension
 
-proc emitFadd*(dest: var Buffer; reg: FpuRegister) =
+proc emitFadd*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FADD instruction: FADD reg (floating point add)
   dest.add(0xD8)  # FADD opcode
   dest.add(encodeModRM(amDirect, 0, int(reg)))  # /0 extension
 
-proc emitFsub*(dest: var Buffer; reg: FpuRegister) =
+proc emitFsub*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FSUB instruction: FSUB reg (floating point subtract)
   dest.add(0xD8)  # FSUB opcode
   dest.add(encodeModRM(amDirect, 4, int(reg)))  # /4 extension
 
-proc emitFmul*(dest: var Buffer; reg: FpuRegister) =
+proc emitFmul*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FMUL instruction: FMUL reg (floating point multiply)
   dest.add(0xD8)  # FMUL opcode
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
 
-proc emitFdiv*(dest: var Buffer; reg: FpuRegister) =
+proc emitFdiv*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FDIV instruction: FDIV reg (floating point divide)
   dest.add(0xD8)  # FDIV opcode
   dest.add(encodeModRM(amDirect, 6, int(reg)))  # /6 extension
 
-proc emitFcom*(dest: var Buffer; reg: FpuRegister) =
+proc emitFcom*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FCOM instruction: FCOM reg (floating point compare)
   dest.add(0xD8)  # FCOM opcode
   dest.add(encodeModRM(amDirect, 2, int(reg)))  # /2 extension
 
-proc emitFcomp*(dest: var Buffer; reg: FpuRegister) =
+proc emitFcomp*(dest: var Bytes; reg: FpuRegister) =
   ## Emit FCOMP instruction: FCOMP reg (floating point compare and pop)
   dest.add(0xD8)  # FCOMP opcode
   dest.add(encodeModRM(amDirect, 3, int(reg)))  # /3 extension
 
-proc emitFsin*(dest: var Buffer) =
+proc emitFsin*(dest: var Bytes) =
   ## Emit FSIN instruction: FSIN (sine)
   dest.add(0xD9)  # FSIN opcode
   dest.add(0xFE)  # /6 extension
 
-proc emitFcos*(dest: var Buffer) =
+proc emitFcos*(dest: var Bytes) =
   ## Emit FCOS instruction: FCOS (cosine)
   dest.add(0xD9)  # FCOS opcode
   dest.add(0xFF)  # /7 extension
 
-proc emitFsqrt*(dest: var Buffer) =
+proc emitFsqrt*(dest: var Bytes) =
   ## Emit FSQRT instruction: FSQRT (square root)
   dest.add(0xD9)  # FSQRT opcode
   dest.add(0xFA)  # /2 extension
 
-proc emitFabs*(dest: var Buffer) =
+proc emitFabs*(dest: var Bytes) =
   ## Emit FABS instruction: FABS (absolute value)
   dest.add(0xD9)  # FABS opcode
   dest.add(0xE1)  # /4 extension
 
-proc emitFchs*(dest: var Buffer) =
+proc emitFchs*(dest: var Bytes) =
   ## Emit FCHS instruction: FCHS (change sign)
   dest.add(0xD9)  # FCHS opcode
   dest.add(0xE0)  # /4 extension
 
 # SSE operations
-proc emitMovss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitMovss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit MOVSS instruction: MOVSS destReg, srcReg (move scalar single precision)
   var rex = RexPrefix()
 
@@ -966,7 +929,7 @@ proc emitMovss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x10)  # MOVSS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitMovsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitMovsd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit MOVSD instruction: MOVSD destReg, srcReg (move scalar double precision)
   var rex = RexPrefix()
 
@@ -981,7 +944,7 @@ proc emitMovsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x10)  # MOVSD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitAddss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitAddss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit ADDSS instruction: ADDSS destReg, srcReg (add scalar single precision)
   var rex = RexPrefix()
 
@@ -996,7 +959,7 @@ proc emitAddss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x58)  # ADDSS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitAddsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitAddsd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit ADDSD instruction: ADDSD destReg, srcReg (add scalar double precision)
   var rex = RexPrefix()
 
@@ -1011,7 +974,7 @@ proc emitAddsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x58)  # ADDSD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitSubss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitSubss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit SUBSS instruction: SUBSS destReg, srcReg (subtract scalar single precision)
   var rex = RexPrefix()
 
@@ -1026,7 +989,7 @@ proc emitSubss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x5C)  # SUBSS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitSubsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitSubsd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit SUBSD instruction: SUBSD destReg, srcReg (subtract scalar double precision)
   var rex = RexPrefix()
 
@@ -1041,7 +1004,7 @@ proc emitSubsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x5C)  # SUBSD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitMulss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitMulss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit MULSS instruction: MULSS destReg, srcReg (multiply scalar single precision)
   var rex = RexPrefix()
 
@@ -1056,7 +1019,7 @@ proc emitMulss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x59)  # MULSS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitMulsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitMulsd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit MULSD instruction: MULSD destReg, srcReg (multiply scalar double precision)
   var rex = RexPrefix()
 
@@ -1071,7 +1034,7 @@ proc emitMulsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x59)  # MULSD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitDivss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitDivss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit DIVSS instruction: DIVSS destReg, srcReg (divide scalar single precision)
   var rex = RexPrefix()
 
@@ -1086,7 +1049,7 @@ proc emitDivss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x5E)  # DIVSS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitDivsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitDivsd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit DIVSD instruction: DIVSD destReg, srcReg (divide scalar double precision)
   var rex = RexPrefix()
 
@@ -1101,7 +1064,7 @@ proc emitDivsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x5E)  # DIVSD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitSqrtss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitSqrtss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit SQRTSS instruction: SQRTSS destReg, srcReg (square root scalar single precision)
   var rex = RexPrefix()
 
@@ -1116,7 +1079,7 @@ proc emitSqrtss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x51)  # SQRTSS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitSqrtsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitSqrtsd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit SQRTSD instruction: SQRTSD destReg, srcReg (square root scalar double precision)
   var rex = RexPrefix()
 
@@ -1131,7 +1094,7 @@ proc emitSqrtsd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x51)  # SQRTSD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitComiss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitComiss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit COMISS instruction: COMISS destReg, srcReg (compare scalar single precision)
   var rex = RexPrefix()
 
@@ -1145,7 +1108,7 @@ proc emitComiss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x2F)  # COMISS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitComisd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitComisd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit COMISD instruction: COMISD destReg, srcReg (compare scalar double precision)
   var rex = RexPrefix()
 
@@ -1160,7 +1123,7 @@ proc emitComisd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x2F)  # COMISD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCvtss2sd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitCvtss2sd*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit CVTSS2SD instruction: CVTSS2SD destReg, srcReg (convert single to double)
   var rex = RexPrefix()
 
@@ -1175,7 +1138,7 @@ proc emitCvtss2sd*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x5A)  # CVTSS2SD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCvtsd2ss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
+proc emitCvtsd2ss*(dest: var Bytes; destReg, srcReg: XmmRegister) =
   ## Emit CVTSD2SS instruction: CVTSD2SS destReg, srcReg (convert double to single)
   var rex = RexPrefix()
 
@@ -1190,7 +1153,7 @@ proc emitCvtsd2ss*(dest: var Buffer; destReg, srcReg: XmmRegister) =
   dest.add(0x5A)  # CVTSD2SS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCvtsi2ss*(dest: var Buffer; destReg: XmmRegister; srcReg: Register) =
+proc emitCvtsi2ss*(dest: var Bytes; destReg: XmmRegister; srcReg: Register) =
   ## Emit CVTSI2SS instruction: CVTSI2SS destReg, srcReg (convert integer to single)
   var rex = RexPrefix()
 
@@ -1205,7 +1168,7 @@ proc emitCvtsi2ss*(dest: var Buffer; destReg: XmmRegister; srcReg: Register) =
   dest.add(0x2A)  # CVTSI2SS opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCvtsi2sd*(dest: var Buffer; destReg: XmmRegister; srcReg: Register) =
+proc emitCvtsi2sd*(dest: var Bytes; destReg: XmmRegister; srcReg: Register) =
   ## Emit CVTSI2SD instruction: CVTSI2SD destReg, srcReg (convert integer to double)
   var rex = RexPrefix()
 
@@ -1220,7 +1183,7 @@ proc emitCvtsi2sd*(dest: var Buffer; destReg: XmmRegister; srcReg: Register) =
   dest.add(0x2A)  # CVTSI2SD opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCvtss2si*(dest: var Buffer; destReg: Register; srcReg: XmmRegister) =
+proc emitCvtss2si*(dest: var Bytes; destReg: Register; srcReg: XmmRegister) =
   ## Emit CVTSS2SI instruction: CVTSS2SI destReg, srcReg (convert single to integer)
   var rex = RexPrefix(w: true)
 
@@ -1235,7 +1198,7 @@ proc emitCvtss2si*(dest: var Buffer; destReg: Register; srcReg: XmmRegister) =
   dest.add(0x2D)  # CVTSS2SI opcode
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCvtsd2si*(dest: var Buffer; destReg: Register; srcReg: XmmRegister) =
+proc emitCvtsd2si*(dest: var Bytes; destReg: Register; srcReg: XmmRegister) =
   ## Emit CVTSD2SI instruction: CVTSD2SI destReg, srcReg (convert double to integer)
   var rex = RexPrefix(w: true)
 
@@ -1252,12 +1215,12 @@ proc emitCvtsd2si*(dest: var Buffer; destReg: Register; srcReg: XmmRegister) =
 
 # Atomic operations
 # Lock prefix for atomic operations
-proc emitLock*(dest: var Buffer) =
+proc emitLock*(dest: var Bytes) =
   ## Emit LOCK prefix for atomic operations
   dest.add(0xF0)
 
 # Atomic exchange operations
-proc emitXchg*(dest: var Buffer; a, b: Register) =
+proc emitXchg*(dest: var Bytes; a, b: Register) =
   ## Emit XCHG instruction: XCHG a, b (exchange)
   var rex = RexPrefix(w: true)
 
@@ -1270,7 +1233,7 @@ proc emitXchg*(dest: var Buffer; a, b: Register) =
   dest.add(0x87)  # XCHG r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitXchg*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitXchg*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit XCHG instruction: XCHG mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -1283,7 +1246,7 @@ proc emitXchg*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x87) # XCHG r/m64, r64
   dest.emitMem(int(reg), mem)
 
-proc emitXadd*(dest: var Buffer; a, b: Register) =
+proc emitXadd*(dest: var Bytes; a, b: Register) =
   ## Emit XADD instruction: XADD a, b (exchange and add)
   var rex = RexPrefix(w: true)
 
@@ -1297,7 +1260,7 @@ proc emitXadd*(dest: var Buffer; a, b: Register) =
   dest.add(0xC1)  # XADD r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitXadd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitXadd*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit XADD instruction: XADD mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -1312,7 +1275,7 @@ proc emitXadd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.emitMem(int(reg), mem)
 
 # Atomic compare and exchange
-proc emitCmpxchg*(dest: var Buffer; a, b: Register) =
+proc emitCmpxchg*(dest: var Bytes; a, b: Register) =
   ## Emit CMPXCHG instruction: CMPXCHG a, b (compare and exchange)
   var rex = RexPrefix(w: true)
 
@@ -1326,7 +1289,7 @@ proc emitCmpxchg*(dest: var Buffer; a, b: Register) =
   dest.add(0xB1)  # CMPXCHG r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitCmpxchg*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitCmpxchg*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit CMPXCHG instruction: CMPXCHG mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -1341,7 +1304,7 @@ proc emitCmpxchg*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.emitMem(int(reg), mem)
 
 # Atomic compare and exchange with 8-byte operand
-proc emitCmpxchg8b*(dest: var Buffer; reg: Register) =
+proc emitCmpxchg8b*(dest: var Bytes; reg: Register) =
   ## Emit CMPXCHG8B instruction: CMPXCHG8B reg (compare and exchange 8 bytes)
   var rex = RexPrefix(w: true)
 
@@ -1354,7 +1317,7 @@ proc emitCmpxchg8b*(dest: var Buffer; reg: Register) =
   dest.add(0xC7)  # CMPXCHG8B r/m64 opcode
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
 
-proc emitCmpxchg8b*(dest: var Buffer; mem: MemoryOperand) =
+proc emitCmpxchg8b*(dest: var Bytes; mem: MemoryOperand) =
   ## Emit CMPXCHG8B instruction: CMPXCHG8B mem
   ## Note: With REX.W this is actually CMPXCHG16B on 64-bit processors
   var rex = RexPrefix(w: true)
@@ -1369,49 +1332,49 @@ proc emitCmpxchg8b*(dest: var Buffer; mem: MemoryOperand) =
   dest.emitMem(1, mem) # /1 extension
 
 # Atomic bit operations
-proc emitBtsAtomic*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBtsAtomic*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit atomic BTS instruction: LOCK BTS reg, bit (atomic bit test and set)
   dest.emitLock()
   dest.emitBts(reg, bit)
 
-proc emitBtrAtomic*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBtrAtomic*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit atomic BTR instruction: LOCK BTR reg, bit (atomic bit test and reset)
   dest.emitLock()
   dest.emitBtr(reg, bit)
 
-proc emitBtcAtomic*(dest: var Buffer; reg: Register; bit: int) =
+proc emitBtcAtomic*(dest: var Bytes; reg: Register; bit: int) =
   ## Emit atomic BTC instruction: LOCK BTC reg, bit (atomic bit test and complement)
   dest.emitLock()
   dest.emitBtc(reg, bit)
 
 
 # Memory fence operations
-proc emitMfence*(dest: var Buffer) =
+proc emitMfence*(dest: var Bytes) =
   ## Emit MFENCE instruction: MFENCE (memory fence)
   dest.add(0x0F)  # Two-byte opcode prefix
   dest.add(0xAE)  # MFENCE opcode
   dest.add(0xF0)  # /6 extension
 
-proc emitSfence*(dest: var Buffer) =
+proc emitSfence*(dest: var Bytes) =
   ## Emit SFENCE instruction: SFENCE (store fence)
   dest.add(0x0F)  # Two-byte opcode prefix
   dest.add(0xAE)  # SFENCE opcode
   dest.add(0xF8)  # /7 extension
 
-proc emitLfence*(dest: var Buffer) =
+proc emitLfence*(dest: var Bytes) =
   ## Emit LFENCE instruction: LFENCE (load fence)
   dest.add(0x0F)  # Two-byte opcode prefix
   dest.add(0xAE)  # LFENCE opcode
   dest.add(0xE8)  # /5 extension
 
 # Pause instruction for spin loops
-proc emitPause*(dest: var Buffer) =
+proc emitPause*(dest: var Bytes) =
   ## Emit PAUSE instruction: PAUSE (pause for spin loops)
   dest.add(0xF3)  # PAUSE prefix
   dest.add(0x90)  # NOP opcode
 
 # Memory ordering operations
-proc emitClflush*(dest: var Buffer; reg: Register) =
+proc emitClflush*(dest: var Bytes; reg: Register) =
   ## Emit CLFLUSH instruction: CLFLUSH reg (cache line flush)
   var rex = RexPrefix()
 
@@ -1424,7 +1387,7 @@ proc emitClflush*(dest: var Buffer; reg: Register) =
   dest.add(0xAE)  # CLFLUSH opcode
   dest.add(encodeModRM(amDirect, 7, int(reg)))  # /7 extension
 
-proc emitClflushopt*(dest: var Buffer; reg: Register) =
+proc emitClflushopt*(dest: var Bytes; reg: Register) =
   ## Emit CLFLUSHOPT instruction: CLFLUSHOPT reg (cache line flush optimized)
   var rex = RexPrefix()
 
@@ -1439,7 +1402,7 @@ proc emitClflushopt*(dest: var Buffer; reg: Register) =
   dest.add(encodeModRM(amDirect, 7, int(reg)))  # /7 extension
 
 # Prefetch operations
-proc emitPrefetchT0*(dest: var Buffer; reg: Register) =
+proc emitPrefetchT0*(dest: var Bytes; reg: Register) =
   ## Emit PREFETCHT0 instruction: PREFETCHT0 reg (prefetch for all caches)
   var rex = RexPrefix()
 
@@ -1452,7 +1415,7 @@ proc emitPrefetchT0*(dest: var Buffer; reg: Register) =
   dest.add(0x18)  # PREFETCH opcode
   dest.add(encodeModRM(amDirect, 1, int(reg)))  # /1 extension
 
-proc emitPrefetchT1*(dest: var Buffer; reg: Register) =
+proc emitPrefetchT1*(dest: var Bytes; reg: Register) =
   ## Emit PREFETCHT1 instruction: PREFETCHT1 reg (prefetch for L2 cache)
   var rex = RexPrefix()
 
@@ -1465,7 +1428,7 @@ proc emitPrefetchT1*(dest: var Buffer; reg: Register) =
   dest.add(0x18)  # PREFETCH opcode
   dest.add(encodeModRM(amDirect, 2, int(reg)))  # /2 extension
 
-proc emitPrefetchT2*(dest: var Buffer; reg: Register) =
+proc emitPrefetchT2*(dest: var Bytes; reg: Register) =
   ## Emit PREFETCHT2 instruction: PREFETCHT2 reg (prefetch for L3 cache)
   var rex = RexPrefix()
 
@@ -1478,7 +1441,7 @@ proc emitPrefetchT2*(dest: var Buffer; reg: Register) =
   dest.add(0x18)  # PREFETCH opcode
   dest.add(encodeModRM(amDirect, 3, int(reg)))  # /3 extension
 
-proc emitPrefetchNta*(dest: var Buffer; reg: Register) =
+proc emitPrefetchNta*(dest: var Bytes; reg: Register) =
   ## Emit PREFETCHNTA instruction: PREFETCHNTA reg (prefetch non-temporal)
   var rex = RexPrefix()
 
@@ -1493,7 +1456,7 @@ proc emitPrefetchNta*(dest: var Buffer; reg: Register) =
 
 
 # Conditional set instructions
-proc emitSetcc*(dest: var Buffer; code: byte; reg: Register) =
+proc emitSetcc*(dest: var Bytes; code: byte; reg: Register) =
   ## Emit SETcc reg (set byte if condition)
   var rex = RexPrefix()
   if needsRex(reg): rex.b = true
@@ -1503,22 +1466,22 @@ proc emitSetcc*(dest: var Buffer; code: byte; reg: Register) =
   dest.add(code)
   dest.add(encodeModRM(amDirect, 0, int(reg))) # /0 extension not used but format needs reg in r/m field
 
-proc emitSete*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x94, reg)
-proc emitSetne*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x95, reg)
-proc emitSetg*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x9F, reg)
-proc emitSetge*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x9D, reg)
-proc emitSetl*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x9C, reg)
-proc emitSetle*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x9E, reg)
-proc emitSeta*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x97, reg)
-proc emitSetae*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x93, reg)
-proc emitSetb*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x92, reg)
-proc emitSetbe*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x96, reg)
-proc emitSeto*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x90, reg)
-proc emitSets*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x98, reg)
-proc emitSetp*(dest: var Buffer; reg: Register) = dest.emitSetcc(0x9A, reg)
+proc emitSete*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x94, reg)
+proc emitSetne*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x95, reg)
+proc emitSetg*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x9F, reg)
+proc emitSetge*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x9D, reg)
+proc emitSetl*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x9C, reg)
+proc emitSetle*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x9E, reg)
+proc emitSeta*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x97, reg)
+proc emitSetae*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x93, reg)
+proc emitSetb*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x92, reg)
+proc emitSetbe*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x96, reg)
+proc emitSeto*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x90, reg)
+proc emitSets*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x98, reg)
+proc emitSetp*(dest: var Bytes; reg: Register) = dest.emitSetcc(0x9A, reg)
 
 # Conditional move instructions
-proc emitCmovcc*(dest: var Buffer; code: byte; destReg, srcReg: Register) =
+proc emitCmovcc*(dest: var Bytes; code: byte; destReg, srcReg: Register) =
   ## Emit CMOVcc destReg, srcReg
   var rex = RexPrefix(w: true)
   if needsRex(destReg): rex.r = true
@@ -1531,7 +1494,7 @@ proc emitCmovcc*(dest: var Buffer; code: byte; destReg, srcReg: Register) =
   dest.add(code)
   dest.add(encodeModRM(amDirect, int(destReg), int(srcReg)))
 
-proc emitCmovcc*(dest: var Buffer; code: byte; destReg: Register; srcMem: MemoryOperand) =
+proc emitCmovcc*(dest: var Bytes; code: byte; destReg: Register; srcMem: MemoryOperand) =
   ## Emit CMOVcc destReg, mem
   var rex = RexPrefix(w: true)
   if needsRex(destReg): rex.r = true
@@ -1545,63 +1508,63 @@ proc emitCmovcc*(dest: var Buffer; code: byte; destReg: Register; srcMem: Memory
   dest.add(code)
   dest.emitMem(int(destReg), srcMem)
 
-proc emitCmove*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x44, d, s)
-proc emitCmove*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x44, d, s)
+proc emitCmove*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x44, d, s)
+proc emitCmove*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x44, d, s)
 
-proc emitCmovne*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x45, d, s)
-proc emitCmovne*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x45, d, s)
+proc emitCmovne*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x45, d, s)
+proc emitCmovne*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x45, d, s)
 
-proc emitCmovg*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4F, d, s)
-proc emitCmovg*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4F, d, s)
+proc emitCmovg*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x4F, d, s)
+proc emitCmovg*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4F, d, s)
 
-proc emitCmovge*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4D, d, s)
-proc emitCmovge*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4D, d, s)
+proc emitCmovge*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x4D, d, s)
+proc emitCmovge*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4D, d, s)
 
-proc emitCmovl*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4C, d, s)
-proc emitCmovl*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4C, d, s)
+proc emitCmovl*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x4C, d, s)
+proc emitCmovl*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4C, d, s)
 
-proc emitCmovle*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4E, d, s)
-proc emitCmovle*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4E, d, s)
+proc emitCmovle*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x4E, d, s)
+proc emitCmovle*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4E, d, s)
 
-proc emitCmova*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x47, d, s)
-proc emitCmova*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x47, d, s)
+proc emitCmova*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x47, d, s)
+proc emitCmova*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x47, d, s)
 
-proc emitCmovae*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x43, d, s)
-proc emitCmovae*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x43, d, s)
+proc emitCmovae*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x43, d, s)
+proc emitCmovae*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x43, d, s)
 
-proc emitCmovb*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x42, d, s)
-proc emitCmovb*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x42, d, s)
+proc emitCmovb*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x42, d, s)
+proc emitCmovb*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x42, d, s)
 
-proc emitCmovbe*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x46, d, s)
-proc emitCmovbe*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x46, d, s)
+proc emitCmovbe*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x46, d, s)
+proc emitCmovbe*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x46, d, s)
 
-proc emitCmovo*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x40, d, s)
-proc emitCmovo*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x40, d, s)
+proc emitCmovo*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x40, d, s)
+proc emitCmovo*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x40, d, s)
 
-proc emitCmovno*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x41, d, s)
-proc emitCmovno*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x41, d, s)
+proc emitCmovno*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x41, d, s)
+proc emitCmovno*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x41, d, s)
 
-proc emitCmovs*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x48, d, s)
-proc emitCmovs*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x48, d, s)
+proc emitCmovs*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x48, d, s)
+proc emitCmovs*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x48, d, s)
 
-proc emitCmovns*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x49, d, s)
-proc emitCmovns*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x49, d, s)
+proc emitCmovns*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x49, d, s)
+proc emitCmovns*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x49, d, s)
 
-proc emitCmovp*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4A, d, s)
-proc emitCmovp*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4A, d, s)
+proc emitCmovp*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x4A, d, s)
+proc emitCmovp*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4A, d, s)
 
-proc emitCmovnp*(dest: var Buffer; d, s: Register) = dest.emitCmovcc(0x4B, d, s)
-proc emitCmovnp*(dest: var Buffer; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4B, d, s)
+proc emitCmovnp*(dest: var Bytes; d, s: Register) = dest.emitCmovcc(0x4B, d, s)
+proc emitCmovnp*(dest: var Bytes; d: Register; s: MemoryOperand) = dest.emitCmovcc(0x4B, d, s)
 
 # Stack operations
-proc emitPush*(dest: var Buffer; reg: Register) =
+proc emitPush*(dest: var Bytes; reg: Register) =
   ## Emit PUSH reg
   var rex = RexPrefix()
   if needsRex(reg): rex.b = true
   if rex.b: dest.add(encodeRex(rex))
   dest.add(byte(0x50 + (int(reg) and 7)))
 
-proc emitPush*(dest: var Buffer; imm: int32) =
+proc emitPush*(dest: var Bytes; imm: int32) =
   ## Emit PUSH imm32
   if imm >= -128 and imm <= 127:
     dest.add(0x6A)
@@ -1610,7 +1573,7 @@ proc emitPush*(dest: var Buffer; imm: int32) =
     dest.add(0x68)
     dest.addt32(imm)
 
-proc emitPop*(dest: var Buffer; reg: Register) =
+proc emitPop*(dest: var Bytes; reg: Register) =
   ## Emit POP reg
   var rex = RexPrefix()
   if needsRex(reg): rex.b = true
@@ -1618,154 +1581,154 @@ proc emitPop*(dest: var Buffer; reg: Register) =
   dest.add(byte(0x58 + (int(reg) and 7)))
 
 # Control flow instructions
-proc emitRet*(dest: var Buffer) =
+proc emitRet*(dest: var Bytes) =
   ## Emit RET instruction
   dest.add(0xC3)
 
 proc emitCall*(dest: var Buffer; target: LabelId) =
   ## Emit CALL instruction: CALL target (relative call)
-  let pos = dest.getCurrentPosition()
-  dest.add(0xE8)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0xE8)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkCall, 5)  # 1 byte opcode + 4 bytes displacement
 
 proc emitJmp*(dest: var Buffer; target: LabelId) =
   ## Emit JMP instruction: JMP target (relative jump)
-  let pos = dest.getCurrentPosition()
-  dest.add(0xE9)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0xE9)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJmp, 5)  # 1 byte opcode + 4 bytes displacement
 
 # Conditional jump instructions
 proc emitJe*(dest: var Buffer; target: LabelId) =
   ## Emit JE instruction: JE target (jump if equal)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x84)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x84)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJe, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJne*(dest: var Buffer; target: LabelId) =
   ## Emit JNE instruction: JNE target (jump if not equal)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x85)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x85)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJne, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJg*(dest: var Buffer; target: LabelId) =
   ## Emit JG instruction: JG target (jump if greater)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x8F)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x8F)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJg, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJl*(dest: var Buffer; target: LabelId) =
   ## Emit JL instruction: JL target (jump if less)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x8C)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x8C)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJl, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJge*(dest: var Buffer; target: LabelId) =
   ## Emit JGE instruction: JGE target (jump if greater or equal)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x8D)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x8D)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJge, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJle*(dest: var Buffer; target: LabelId) =
   ## Emit JLE instruction: JLE target (jump if less or equal)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x8E)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x8E)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJle, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJa*(dest: var Buffer; target: LabelId) =
   ## Emit JA instruction: JA target (jump if above, unsigned)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x87)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x87)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJa, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJb*(dest: var Buffer; target: LabelId) =
   ## Emit JB instruction: JB target (jump if below, unsigned)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x82)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x82)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJb, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJae*(dest: var Buffer; target: LabelId) =
   ## Emit JAE instruction: JAE target (jump if above or equal, unsigned)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x83)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x83)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJae, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJbe*(dest: var Buffer; target: LabelId) =
   ## Emit JBE instruction: JBE target (jump if below or equal, unsigned)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x86)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x86)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJbe, 6)  # 2 bytes opcode + 4 bytes displacement
 
 proc emitJo*(dest: var Buffer; target: LabelId) =
   ## Emit JO instruction: JO target (jump if overflow)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x80)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x80)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJo, 6)
 
 proc emitJno*(dest: var Buffer; target: LabelId) =
   ## Emit JNO instruction: JNO target (jump if not overflow)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x81)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x81)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJno, 6)
 
 proc emitJs*(dest: var Buffer; target: LabelId) =
   ## Emit JS instruction: JS target (jump if sign)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x88)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x88)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJs, 6)
 
 proc emitJns*(dest: var Buffer; target: LabelId) =
   ## Emit JNS instruction: JNS target (jump if not sign)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x89)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x89)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJns, 6)
 
 proc emitJp*(dest: var Buffer; target: LabelId) =
   ## Emit JP instruction: JP target (jump if parity)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x8A)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x8A)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJp, 6)
 
 proc emitJnp*(dest: var Buffer; target: LabelId) =
   ## Emit JNP instruction: JNP target (jump if not parity)
-  let pos = dest.getCurrentPosition()
-  dest.add(0x0F)
-  dest.add(0x8B)
-  dest.addt32(0)  # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x0F)
+  dest.data.add(0x8B)
+  dest.data.addt32(0)  # Placeholder
   dest.addReloc(pos, target, rkJnp, 6)
 
-proc emitJmpReg*(dest: var Buffer; reg: Register) =
+proc emitJmpReg*(dest: var Bytes; reg: Register) =
   ## Emit JMP instruction: JMP reg (indirect jump)
   var rex = RexPrefix()
 
@@ -1778,7 +1741,7 @@ proc emitJmpReg*(dest: var Buffer; reg: Register) =
   dest.add(encodeModRM(amDirect, 4, int(reg)))  # /4 extension
 
 # Bit manipulation instructions
-proc emitAnd*(dest: var Buffer; a, b: Register) =
+proc emitAnd*(dest: var Bytes; a, b: Register) =
   ## Emit AND instruction: AND a, b
   var rex = RexPrefix(w: true)
 
@@ -1791,7 +1754,7 @@ proc emitAnd*(dest: var Buffer; a, b: Register) =
   dest.add(0x21)  # AND r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitAnd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitAnd*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit AND instruction: AND mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -1801,7 +1764,7 @@ proc emitAnd*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x21)
   dest.emitMem(int(reg), mem)
 
-proc emitOr*(dest: var Buffer; a, b: Register) =
+proc emitOr*(dest: var Bytes; a, b: Register) =
   ## Emit OR instruction: OR a, b
   var rex = RexPrefix(w: true)
 
@@ -1814,7 +1777,7 @@ proc emitOr*(dest: var Buffer; a, b: Register) =
   dest.add(0x09)  # OR r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitOr*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitOr*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit OR instruction: OR mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -1824,7 +1787,7 @@ proc emitOr*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.add(0x09)
   dest.emitMem(int(reg), mem)
 
-proc emitXor*(dest: var Buffer; a, b: Register) =
+proc emitXor*(dest: var Bytes; a, b: Register) =
   ## Emit XOR instruction: XOR a, b
   var rex = RexPrefix(w: true)
 
@@ -1837,7 +1800,7 @@ proc emitXor*(dest: var Buffer; a, b: Register) =
   dest.add(0x31)  # XOR r/m64, r64 opcode
   dest.add(encodeModRM(amDirect, int(a), int(b)))
 
-proc emitXor*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
+proc emitXor*(dest: var Bytes; mem: MemoryOperand; reg: Register) =
   ## Emit XOR instruction: XOR mem, reg
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true
@@ -1848,50 +1811,50 @@ proc emitXor*(dest: var Buffer; mem: MemoryOperand; reg: Register) =
   dest.emitMem(int(reg), mem)
 
 # Atomic arithmetic operations
-proc emitAddAtomic*(dest: var Buffer; a, b: Register) =
+proc emitAddAtomic*(dest: var Bytes; a, b: Register) =
   ## Emit atomic ADD instruction: LOCK ADD a, b (atomic add)
   dest.emitLock()
   dest.emitAdd(a, b)
 
-proc emitSubAtomic*(dest: var Buffer; a, b: Register) =
+proc emitSubAtomic*(dest: var Bytes; a, b: Register) =
   ## Emit atomic SUB instruction: LOCK SUB a, b (atomic subtract)
   dest.emitLock()
   dest.emitSub(a, b)
 
-proc emitAndAtomic*(dest: var Buffer; a, b: Register) =
+proc emitAndAtomic*(dest: var Bytes; a, b: Register) =
   ## Emit atomic AND instruction: LOCK AND a, b (atomic and)
   dest.emitLock()
   dest.emitAnd(a, b)
 
-proc emitOrAtomic*(dest: var Buffer; a, b: Register) =
+proc emitOrAtomic*(dest: var Bytes; a, b: Register) =
   ## Emit atomic OR instruction: LOCK OR a, b (atomic or)
   dest.emitLock()
   dest.emitOr(a, b)
 
-proc emitXorAtomic*(dest: var Buffer; a, b: Register) =
+proc emitXorAtomic*(dest: var Bytes; a, b: Register) =
   ## Emit atomic XOR instruction: LOCK XOR a, b (atomic xor)
   dest.emitLock()
   dest.emitXor(a, b)
 
 # Atomic increment and decrement
-proc emitIncAtomic*(dest: var Buffer; reg: Register) =
+proc emitIncAtomic*(dest: var Bytes; reg: Register) =
   ## Emit atomic INC instruction: LOCK INC reg (atomic increment)
   dest.emitLock()
   dest.emitInc(reg)
 
-proc emitDecAtomic*(dest: var Buffer; reg: Register) =
+proc emitDecAtomic*(dest: var Bytes; reg: Register) =
   ## Emit atomic DEC instruction: LOCK DEC reg (atomic decrement)
   dest.emitLock()
   dest.emitDec(reg)
 
 # System instructions
-proc emitSyscall*(dest: var Buffer) =
+proc emitSyscall*(dest: var Bytes) =
   ## Emit SYSCALL instruction
   dest.add(0x0F)
   dest.add(0x05)
 
 # NOP instruction
-proc emitNop*(dest: var Buffer) =
+proc emitNop*(dest: var Bytes) =
   ## Emit NOP instruction
   dest.add(0x90)
 
@@ -1911,7 +1874,9 @@ proc updateRelocDisplacements*(buf: var Buffer) =
       case reloc.kind
       of rkCall, rkJmp: currentPos + 5
       of rkLea: currentPos + 7
-      else: currentPos + 6
+      of rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
+         rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp:
+        currentPos + 6
 
     if requiredSize > buf.data.len:
       continue  # Skip this relocation if buffer is too small
@@ -1944,7 +1909,8 @@ proc updateRelocDisplacements*(buf: var Buffer) =
       buf.data[currentPos + 2] = byte((signedDistance shr 8) and 0xFF)
       buf.data[currentPos + 3] = byte((signedDistance shr 16) and 0xFF)
       buf.data[currentPos + 4] = byte((signedDistance shr 24) and 0xFF)
-    else:
+    of rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
+       rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp:
       # Conditional jumps use 32-bit displacement (little-endian)
       # Conditional jumps have 2-byte opcode, so displacement starts at +2
       buf.data[currentPos + 2] = byte(signedDistance and 0xFF)
@@ -1954,7 +1920,7 @@ proc updateRelocDisplacements*(buf: var Buffer) =
 
 proc optimizeJumps*(buf: Buffer): Buffer =
   ## Optimize all jump instructions by creating a new optimized buffer
-  var optimized = initBuffer()
+  var optimized = Buffer()
 
   # Copy all data to new buffer
   optimized.data = buf.data
@@ -1973,7 +1939,7 @@ proc optimizeJumps*(buf: Buffer): Buffer =
     changed = false
     inc(iterations)
 
-    var newBuf = initBuffer()
+    var newBuf = Buffer()
     newBuf.labels = optimized.labels # Copy labels, will update positions
 
     # Map label positions to indices for efficient update
@@ -2001,30 +1967,31 @@ proc optimizeJumps*(buf: Buffer): Buffer =
 
         var addedBytes = 0
         let originalSize =
-            case reloc.kind
-            of rkLea: 7
-            of rkCall, rkJmp: 5
-            else: 6
+          case reloc.kind
+          of rkLea: 7
+          of rkCall, rkJmp: 5
+          of rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
+             rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp: 6
 
         # Check if we can use a short jump
         if reloc.kind == rkLea:
-           # LEA is fixed size, copy original bytes
-           # The ModRM byte is at +2.
-           newBuf.data.add(0x48)
-           newBuf.data.add(0x8D)
-           newBuf.data.add(optimized.data[i+2])
-           newBuf.addt32(int32(distance))
-           addedBytes = 7
+          # LEA is fixed size, copy original bytes
+          # The ModRM byte is at +2.
+          newBuf.data.add(0x48)
+          newBuf.data.add(0x8D)
+          newBuf.data.add(optimized.data[i+2])
+          newBuf.data.addt32(int32(distance))
+          addedBytes = 7
 
-           # Keep track of this relocation in the new buffer
-           newBuf.addReloc(currentNewPos, reloc.target, reloc.kind, reloc.originalSize)
+          # Keep track of this relocation in the new buffer
+          newBuf.addReloc(currentNewPos, reloc.target, reloc.kind, reloc.originalSize)
 
         elif canUseShortJump(distance):
           case reloc.kind
           of rkCall:
             # CALL doesn't have 8-bit form, emit as 32-bit
             newBuf.data.add(0xE8)  # CALL opcode
-            newBuf.addt32(int32(distance))
+            newBuf.data.addt32(int32(distance))
             addedBytes = 5
             newBuf.addReloc(currentNewPos, reloc.target, reloc.kind, reloc.originalSize)
           of rkJmp:
@@ -2034,7 +2001,8 @@ proc optimizeJumps*(buf: Buffer): Buffer =
             addedBytes = 2
             changed = true
             # No need to track reloc for short jump
-          else:
+          of rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
+             rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp, rkLea:
             # Conditional jumps with 8-bit displacement
             let shortOpcode =
               case reloc.kind
@@ -2065,15 +2033,16 @@ proc optimizeJumps*(buf: Buffer): Buffer =
           case reloc.kind
           of rkCall:
             newBuf.data.add(0xE8)  # CALL opcode
-            newBuf.addt32(int32(distance))
+            newBuf.data.addt32(int32(distance))
             addedBytes = 5
             newBuf.addReloc(currentNewPos, reloc.target, reloc.kind, reloc.originalSize)
           of rkJmp:
             newBuf.data.add(0xE9)  # JMP rel32 opcode
-            newBuf.addt32(int32(distance))
+            newBuf.data.addt32(int32(distance))
             addedBytes = 5
             newBuf.addReloc(currentNewPos, reloc.target, reloc.kind, reloc.originalSize)
-          else:
+          of rkJe, rkJne, rkJg, rkJl, rkJge, rkJle, rkJa, rkJb, rkJae, rkJbe,
+             rkJo, rkJno, rkJs, rkJns, rkJp, rkJnp, rkLea:
             # Conditional jumps with 32-bit displacement
             newBuf.data.add(0x0F)  # Two-byte opcode prefix
             let longOpcode =
@@ -2096,7 +2065,7 @@ proc optimizeJumps*(buf: Buffer): Buffer =
               of rkJnp: 0x8B
               else: 0x84  # Default to JE
             newBuf.data.add(byte(longOpcode))
-            newBuf.addt32(int32(distance))
+            newBuf.data.addt32(int32(distance))
             addedBytes = 6
             newBuf.addReloc(currentNewPos, reloc.target, reloc.kind, reloc.originalSize)
 
@@ -2130,14 +2099,14 @@ proc finalize*(buf: var Buffer) =
 
 proc emitLea*(dest: var Buffer; reg: Register; target: LabelId) =
   ## Emit LEA instruction: LEA reg, [RIP + target]
-  let pos = dest.getCurrentPosition()
-  dest.add(0x48) # REX.W
-  dest.add(0x8D) # LEA opcode
-  dest.add(encodeModRM(amIndirect, int(reg), 5)) # Mod=00, Reg=reg, RM=101 (RIP-rel)
-  dest.addt32(0) # Placeholder
+  let pos = dest.data.getCurrentPosition()
+  dest.data.add(0x48) # REX.W
+  dest.data.add(0x8D) # LEA opcode
+  dest.data.add(encodeModRM(amIndirect, int(reg), 5)) # Mod=00, Reg=reg, RM=101 (RIP-rel)
+  dest.data.addt32(0) # Placeholder
   dest.addReloc(pos, target, rkLea, 7)
 
-proc emitLea*(dest: var Buffer; reg: Register; mem: MemoryOperand) =
+proc emitLea*(dest: var Bytes; reg: Register; mem: MemoryOperand) =
   ## Emit LEA instruction: LEA reg, mem
   var rex = RexPrefix(w: true)
   if needsRex(reg): rex.r = true

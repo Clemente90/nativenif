@@ -3,6 +3,8 @@
 
 import std/[strutils, tables]
 
+import buffers, x86
+
 type
   # ARM64 64-bit general purpose registers
   Register* = enum
@@ -27,7 +29,6 @@ const
   XZR* = 31  # Zero register (when used in certain contexts)
 
 type
-
   # Memory operand for load/store instructions
   MemoryOperand* = object
     base*: Register
@@ -35,94 +36,6 @@ type
     hasIndex*: bool
     index*: Register
     shift*: int  # 0, 1, 2, or 3 (LSL #0, #1, #2, #3)
-
-  # Label system for branches
-  LabelId* = distinct int
-
-  # Label definition in the instruction stream
-  LabelDef* = object
-    id*: LabelId
-    position*: int  # Position where label is defined
-
-  # Relocation entry for branch optimization and patching
-  RelocEntry* = object
-    position*: int        # Position in buffer where instruction starts
-    target*: LabelId      # Target label ID
-    kind*: RelocKind      # Type of relocation/instruction
-
-  # Types of instructions requiring relocation/patching
-  RelocKind* = enum
-    rkB, rkBL, rkBEQ, rkBNE, rkCBZ, rkCBNZ, rkTBZ, rkTBNZ, rkADR, rkADRP
-
-  # Buffer for accumulating instruction bytes
-  Buffer* = object
-    data*: seq[byte]
-    relocs*: seq[RelocEntry]  # Track instructions needing relocation
-    labels*: seq[LabelDef]    # Track label definitions
-    nextLabelId*: int         # Next available label ID
-
-# LabelId equality comparison
-proc `==`*(a, b: LabelId): bool =
-  int(a) == int(b)
-
-# Buffer operations
-proc initBuffer*(): Buffer =
-  result = Buffer(
-    data: @[],
-    relocs: @[],
-    labels: @[],
-    nextLabelId: 0
-  )
-
-proc add*(buf: var Buffer; b: byte) =
-  buf.data.add(b)
-
-proc addUint32*(buf: var Buffer; val: uint32) =
-  # ARM is little-endian
-  buf.add(byte(val and 0xFF))
-  buf.add(byte((val shr 8) and 0xFF))
-  buf.add(byte((val shr 16) and 0xFF))
-  buf.add(byte((val shr 24) and 0xFF))
-
-proc len*(buf: Buffer): int =
-  ## Get the length of the buffer
-  buf.data.len
-
-proc `$`*(buf: Buffer): string =
-  result = ""
-  for i, b in buf.data:
-    if i > 0: result.add(" ")
-    result.add(b.toHex(2).toUpper())
-
-# Label system functions
-proc createLabel*(buf: var Buffer): LabelId =
-  ## Create a new label ID
-  result = LabelId(buf.nextLabelId)
-  inc(buf.nextLabelId)
-
-proc defineLabel*(buf: var Buffer; label: LabelId) =
-  ## Define a label at the current position
-  buf.labels.add(LabelDef(id: label, position: buf.data.len))
-
-proc getLabelPosition*(buf: Buffer; label: LabelId): int =
-  ## Get the position of a label definition
-  for labelDef in buf.labels:
-    if labelDef.id == label:
-      return labelDef.position
-  raise newException(ValueError, "Label not found")
-
-# Relocation helper functions
-proc addReloc*(buf: var Buffer; position: int; target: LabelId; kind: RelocKind) =
-  ## Add a relocation entry to the buffer
-  buf.relocs.add(RelocEntry(
-    position: position,
-    target: target,
-    kind: kind
-  ))
-
-proc getCurrentPosition*(buf: Buffer): int =
-  ## Get the current position in the buffer
-  buf.data.len
 
 # ARM64 instruction encoding helpers
 proc encodeReg(r: Register): uint32 =
@@ -132,7 +45,7 @@ proc encodeReg32(r: Register32): uint32 =
   uint32(ord(r))
 
 # MOV instruction - register to register
-proc emitMov*(dest: var Buffer; rd, rn: Register) =
+proc emitMov*(dest: var Bytes; rd, rn: Register) =
   ## Emit MOV instruction: MOV rd, rn (alias for ORR rd, XZR, rn)
   # ORR Xd, XZR, Xm: 1010 1010 000m mmmm 0000 00nn nnnd dddd
   let instr = 0xAA000000'u32 or
@@ -141,7 +54,7 @@ proc emitMov*(dest: var Buffer; rd, rn: Register) =
   dest.addUint32(instr)
 
 # MOV immediate (uses MOVZ)
-proc emitMovImm*(dest: var Buffer; rd: Register; imm: uint16) =
+proc emitMovImm*(dest: var Bytes; rd: Register; imm: uint16) =
   ## Emit MOV instruction: MOV rd, #imm (MOVZ)
   # MOVZ Xd, #imm: 1101 0010 100i iiii iiii iiii iiid dddd
   let instr = 0xD2800000'u32 or
@@ -150,7 +63,7 @@ proc emitMovImm*(dest: var Buffer; rd: Register; imm: uint16) =
   dest.addUint32(instr)
 
 # ADD instruction - register + register
-proc emitAdd*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitAdd*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit ADD instruction: ADD rd, rn, rm
   # ADD Xd, Xn, Xm: 1000 1011 000m mmmm 0000 00nn nnnd dddd
   let instr = 0x8B000000'u32 or
@@ -160,7 +73,7 @@ proc emitAdd*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # ADD immediate
-proc emitAddImm*(dest: var Buffer; rd, rn: Register; imm: uint16) =
+proc emitAddImm*(dest: var Bytes; rd, rn: Register; imm: uint16) =
   ## Emit ADD instruction: ADD rd, rn, #imm
   # ADD Xd, Xn, #imm: 1001 0001 00ii iiii iiii iinn nnnd dddd
   let instr = 0x91000000'u32 or
@@ -170,7 +83,7 @@ proc emitAddImm*(dest: var Buffer; rd, rn: Register; imm: uint16) =
   dest.addUint32(instr)
 
 # SUB instruction - register - register
-proc emitSub*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitSub*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit SUB instruction: SUB rd, rn, rm
   # SUB Xd, Xn, Xm: 1100 1011 000m mmmm 0000 00nn nnnd dddd
   let instr = 0xCB000000'u32 or
@@ -180,7 +93,7 @@ proc emitSub*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # SUB immediate
-proc emitSubImm*(dest: var Buffer; rd, rn: Register; imm: uint16) =
+proc emitSubImm*(dest: var Bytes; rd, rn: Register; imm: uint16) =
   ## Emit SUB instruction: SUB rd, rn, #imm
   # SUB Xd, Xn, #imm: 1101 0001 00ii iiii iiii iinn nnnd dddd
   let instr = 0xD1000000'u32 or
@@ -190,7 +103,7 @@ proc emitSubImm*(dest: var Buffer; rd, rn: Register; imm: uint16) =
   dest.addUint32(instr)
 
 # MUL instruction
-proc emitMul*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitMul*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit MUL instruction: MUL rd, rn, rm (alias for MADD rd, rn, rm, XZR)
   # MADD Xd, Xn, Xm, XZR: 1001 1011 000m mmmm 0111 11nn nnnd dddd
   let instr = 0x9B007C00'u32 or
@@ -200,7 +113,7 @@ proc emitMul*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # SDIV instruction (signed divide)
-proc emitSdiv*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitSdiv*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit SDIV instruction: SDIV rd, rn, rm
   # SDIV Xd, Xn, Xm: 1001 1010 110m mmmm 0000 11nn nnnd dddd
   let instr = 0x9AC00C00'u32 or
@@ -210,7 +123,7 @@ proc emitSdiv*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # UDIV instruction (unsigned divide)
-proc emitUdiv*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitUdiv*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit UDIV instruction: UDIV rd, rn, rm
   # UDIV Xd, Xn, Xm: 1001 1010 110m mmmm 0000 10nn nnnd dddd
   let instr = 0x9AC00800'u32 or
@@ -220,7 +133,7 @@ proc emitUdiv*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # Logical instructions
-proc emitAnd*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitAnd*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit AND instruction: AND rd, rn, rm
   # AND Xd, Xn, Xm: 1000 1010 000m mmmm 0000 00nn nnnd dddd
   let instr = 0x8A000000'u32 or
@@ -229,7 +142,7 @@ proc emitAnd*(dest: var Buffer; rd, rn, rm: Register) =
               encodeReg(rd)
   dest.addUint32(instr)
 
-proc emitOrr*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitOrr*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit ORR instruction: ORR rd, rn, rm
   # ORR Xd, Xn, Xm: 1010 1010 000m mmmm 0000 00nn nnnd dddd
   let instr = 0xAA000000'u32 or
@@ -238,7 +151,7 @@ proc emitOrr*(dest: var Buffer; rd, rn, rm: Register) =
               encodeReg(rd)
   dest.addUint32(instr)
 
-proc emitEor*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitEor*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit EOR instruction: EOR rd, rn, rm (XOR)
   # EOR Xd, Xn, Xm: 1100 1010 000m mmmm 0000 00nn nnnd dddd
   let instr = 0xCA000000'u32 or
@@ -248,7 +161,7 @@ proc emitEor*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # Shift instructions
-proc emitLsl*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitLsl*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit LSL instruction: LSL rd, rn, rm (logical shift left)
   # LSLV Xd, Xn, Xm: 1001 1010 110m mmmm 0010 00nn nnnd dddd
   let instr = 0x9AC02000'u32 or
@@ -257,7 +170,7 @@ proc emitLsl*(dest: var Buffer; rd, rn, rm: Register) =
               encodeReg(rd)
   dest.addUint32(instr)
 
-proc emitLslImm*(dest: var Buffer; rd, rn: Register; shift: uint8) =
+proc emitLslImm*(dest: var Bytes; rd, rn: Register; shift: uint8) =
   ## Emit LSL instruction: LSL rd, rn, #shift
   # UBFM Xd, Xn, #(-shift MOD 64), #(63-shift)
   let negShift = (64'u32 - uint32(shift)) and 0x3F
@@ -269,7 +182,7 @@ proc emitLslImm*(dest: var Buffer; rd, rn: Register; shift: uint8) =
               encodeReg(rd)
   dest.addUint32(instr)
 
-proc emitLsr*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitLsr*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit LSR instruction: LSR rd, rn, rm (logical shift right)
   # LSRV Xd, Xn, Xm: 1001 1010 110m mmmm 0010 01nn nnnd dddd
   let instr = 0x9AC02400'u32 or
@@ -278,7 +191,7 @@ proc emitLsr*(dest: var Buffer; rd, rn, rm: Register) =
               encodeReg(rd)
   dest.addUint32(instr)
 
-proc emitLsrImm*(dest: var Buffer; rd, rn: Register; shift: uint8) =
+proc emitLsrImm*(dest: var Bytes; rd, rn: Register; shift: uint8) =
   ## Emit LSR instruction: LSR rd, rn, #shift
   # UBFM Xd, Xn, #shift, #63
   let instr = 0xD3400000'u32 or
@@ -288,7 +201,7 @@ proc emitLsrImm*(dest: var Buffer; rd, rn: Register; shift: uint8) =
               encodeReg(rd)
   dest.addUint32(instr)
 
-proc emitAsr*(dest: var Buffer; rd, rn, rm: Register) =
+proc emitAsr*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit ASR instruction: ASR rd, rn, rm (arithmetic shift right)
   # ASRV Xd, Xn, Xm: 1001 1010 110m mmmm 0010 10nn nnnd dddd
   let instr = 0x9AC02800'u32 or
@@ -298,7 +211,7 @@ proc emitAsr*(dest: var Buffer; rd, rn, rm: Register) =
   dest.addUint32(instr)
 
 # Compare instructions
-proc emitCmp*(dest: var Buffer; rn, rm: Register) =
+proc emitCmp*(dest: var Bytes; rn, rm: Register) =
   ## Emit CMP instruction: CMP rn, rm (alias for SUBS XZR, rn, rm)
   # SUBS XZR, Xn, Xm: 1110 1011 000m mmmm 0000 00nn nnn1 1111
   let instr = 0xEB00001F'u32 or
@@ -306,7 +219,7 @@ proc emitCmp*(dest: var Buffer; rn, rm: Register) =
               (encodeReg(rn) shl 5)
   dest.addUint32(instr)
 
-proc emitCmpImm*(dest: var Buffer; rn: Register; imm: uint16) =
+proc emitCmpImm*(dest: var Bytes; rn: Register; imm: uint16) =
   ## Emit CMP instruction: CMP rn, #imm
   # SUBS XZR, Xn, #imm: 1111 0001 00ii iiii iiii iinn nnn1 1111
   let instr = 0xF100001F'u32 or
@@ -315,7 +228,7 @@ proc emitCmpImm*(dest: var Buffer; rn: Register; imm: uint16) =
   dest.addUint32(instr)
 
 # NEG instruction
-proc emitNeg*(dest: var Buffer; rd, rm: Register) =
+proc emitNeg*(dest: var Bytes; rd, rm: Register) =
   ## Emit NEG instruction: NEG rd, rm (alias for SUB rd, XZR, rm)
   # SUB Xd, XZR, Xm: 1100 1011 000m mmmm 0000 0011 111d dddd
   let instr = 0xCB0003E0'u32 or
@@ -324,7 +237,7 @@ proc emitNeg*(dest: var Buffer; rd, rm: Register) =
   dest.addUint32(instr)
 
 # Load/Store instructions
-proc emitLdr*(dest: var Buffer; rt: Register; rn: Register; offset: int32) =
+proc emitLdr*(dest: var Bytes; rt: Register; rn: Register; offset: int32) =
   ## Emit LDR instruction: LDR rt, [rn, #offset]
   ## Offset must be 8-byte aligned and in range [0, 32760]
   let scaledOffset = offset div 8
@@ -337,7 +250,7 @@ proc emitLdr*(dest: var Buffer; rt: Register; rn: Register; offset: int32) =
               encodeReg(rt)
   dest.addUint32(instr)
 
-proc emitStr*(dest: var Buffer; rt: Register; rn: Register; offset: int32) =
+proc emitStr*(dest: var Bytes; rt: Register; rn: Register; offset: int32) =
   ## Emit STR instruction: STR rt, [rn, #offset]
   ## Offset must be 8-byte aligned and in range [0, 32760]
   let scaledOffset = offset div 8
@@ -353,47 +266,51 @@ proc emitStr*(dest: var Buffer; rt: Register; rn: Register; offset: int32) =
 # Branch instructions
 proc emitB*(dest: var Buffer; target: LabelId) =
   ## Emit B instruction: B target (unconditional branch)
-  let pos = dest.getCurrentPosition()
-  dest.addUint32(0x14000000'u32)  # Placeholder
-  dest.addReloc(pos, target, rkB)
+  let pos = dest.data.getCurrentPosition()
+  dest.data.addUint32(0x14000000'u32)  # Placeholder
+  when false:
+    dest.addReloc(pos, target, rkB)
 
 proc emitBL*(dest: var Buffer; target: LabelId) =
   ## Emit BL instruction: BL target (branch with link)
-  let pos = dest.getCurrentPosition()
-  dest.addUint32(0x94000000'u32)  # Placeholder
-  dest.addReloc(pos, target, rkBL)
+  let pos = dest.data.getCurrentPosition()
+  dest.data.addUint32(0x94000000'u32)  # Placeholder
+  when false:
+    dest.addReloc(pos, target, rkBL)
 
 proc emitBeq*(dest: var Buffer; target: LabelId) =
   ## Emit BEQ instruction: BEQ target (branch if equal)
-  let pos = dest.getCurrentPosition()
-  dest.addUint32(0x54000000'u32)  # Placeholder, condition=0000 (EQ)
-  dest.addReloc(pos, target, rkBEQ)
+  let pos = dest.data.getCurrentPosition()
+  dest.data.addUint32(0x54000000'u32)  # Placeholder, condition=0000 (EQ)
+  when false:
+    dest.addReloc(pos, target, rkBEQ)
 
 proc emitBne*(dest: var Buffer; target: LabelId) =
   ## Emit BNE instruction: BNE target (branch if not equal)
-  let pos = dest.getCurrentPosition()
-  dest.addUint32(0x54000001'u32)  # Placeholder, condition=0001 (NE)
-  dest.addReloc(pos, target, rkBNE)
+  let pos = dest.data.getCurrentPosition()
+  dest.data.addUint32(0x54000001'u32)  # Placeholder, condition=0001 (NE)
+  when false:
+    dest.addReloc(pos, target, rkBNE)
 
-proc emitRet*(dest: var Buffer) =
+proc emitRet*(dest: var Bytes) =
   ## Emit RET instruction: RET (return, defaults to X30/LR)
   # RET: 1101 0110 0101 1111 0000 0000 0001 1110
   dest.addUint32(0xD65F03C0'u32)
 
-proc emitNop*(dest: var Buffer) =
+proc emitNop*(dest: var Bytes) =
   ## Emit NOP instruction
   # NOP: 1101 0101 0000 0011 0010 0000 0001 1111
   dest.addUint32(0xD503201F'u32)
 
 # SVC (supervisor call, syscall)
-proc emitSvc*(dest: var Buffer; imm: uint16) =
+proc emitSvc*(dest: var Bytes; imm: uint16) =
   ## Emit SVC instruction: SVC #imm
   # SVC #imm: 1101 0100 000i iiii iiii iiii iiii 0001
   let instr = 0xD4000001'u32 or (uint32(imm) shl 5)
   dest.addUint32(instr)
 
 # Stack operations
-proc emitStp*(dest: var Buffer; rt1, rt2: Register; rn: Register; offset: int32) =
+proc emitStp*(dest: var Bytes; rt1, rt2: Register; rn: Register; offset: int32) =
   ## Emit STP instruction: STP rt1, rt2, [rn, #offset]! (pre-index)
   ## Used for pushing pairs of registers to stack
   let scaledOffset = offset div 8
@@ -407,7 +324,7 @@ proc emitStp*(dest: var Buffer; rt1, rt2: Register; rn: Register; offset: int32)
               encodeReg(rt1)
   dest.addUint32(instr)
 
-proc emitLdp*(dest: var Buffer; rt1, rt2: Register; rn: Register; offset: int32) =
+proc emitLdp*(dest: var Bytes; rt1, rt2: Register; rn: Register; offset: int32) =
   ## Emit LDP instruction: LDP rt1, rt2, [rn], #offset (post-index)
   ## Used for popping pairs of registers from stack
   let scaledOffset = offset div 8
@@ -428,10 +345,11 @@ proc updateRelocDisplacements*(buf: var Buffer) =
     let currentPos = reloc.position
     let targetPos = buf.getLabelPosition(reloc.target)
     let distance = targetPos - currentPos
-    
+
     # Calculate branch offset in instructions (divide by 4)
     let offset = distance div 4
-    
+
+  when false:
     case reloc.kind
     of rkB, rkBL:
       # B/BL: 26-bit signed immediate
@@ -445,7 +363,7 @@ proc updateRelocDisplacements*(buf: var Buffer) =
     of rkBEQ, rkBNE:
       # Conditional branches: 19-bit signed immediate
       let imm19 = uint32(offset) and 0x7FFFF
-      let baseInstr = 
+      let baseInstr =
         (uint32(buf.data[currentPos]) or
          (uint32(buf.data[currentPos + 1]) shl 8) or
          (uint32(buf.data[currentPos + 2]) shl 16) or
