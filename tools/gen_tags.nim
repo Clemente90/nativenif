@@ -7,16 +7,18 @@ proc toNimName(s: string; suffix: string): string =
 
 type
   EnumList = enum
-    NifasmInst, NifasmType, NifasmDecl, NifasmExpr, NifasmOther, NifasmReg
+    X64Inst, A64Inst, NifasmType, NifasmDecl, NifasmExpr, X64Flag, X64Reg, A64Reg
 
 proc toSuffix(e: EnumList): (string, string) =
   case e
-  of NifasmInst: ("I", "NoInst")
+  of X64Inst: ("X64", "NoX64Inst")
+  of A64Inst: ("A64", "NoA64Inst")
   of NifasmType: ("T", "NoType")
   of NifasmDecl: ("D", "NoDecl")
   of NifasmExpr: ("X", "NoExpr")
-  of NifasmOther: ("O", "NoOther")
-  of NifasmReg: ("R", "NoReg")
+  of X64Flag: ("O", "NoFlag")
+  of X64Reg: ("R", "NoReg")
+  of A64Reg: ("R", "NoReg")
 
 proc shortcutToEnumList(shortcut: string): EnumList =
   try:
@@ -140,12 +142,12 @@ proc genTags(inp: File) =
 
   createDir "src/nifasm"
   writeTagsFile "src/nifasm/tags.nim", tags
-  # writeModel "src/nifasm/nifasm_model.nim", enumDecls, NifasmInst, NifasmOther
-  # For now I'll just rely on tags.nim and manual casting or validation if needed, 
-  # or I can generate the model file if I decide to use it. 
+  # writeModel "src/nifasm/nifasm_model.nim", enumDecls, X64Inst, X64Flag
+  # For now I'll just rely on tags.nim and manual casting or validation if needed,
+  # or I can generate the model file if I decide to use it.
   # Let's generate the model file too, it's useful.
-  
-  writeModel "src/nifasm/model.nim", enumDecls, NifasmInst, NifasmReg
+
+  writeModel "src/nifasm/model.nim", enumDecls, X64Inst, A64Reg
 
 proc main =
   var inp = open("doc/tags.md", fmRead)
