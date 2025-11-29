@@ -268,29 +268,25 @@ proc emitB*(dest: var Buffer; target: LabelId) =
   ## Emit B instruction: B target (unconditional branch)
   let pos = dest.data.getCurrentPosition()
   dest.data.addUint32(0x14000000'u32)  # Placeholder
-  when false:
-    dest.addReloc(pos, target, rkB)
+  dest.addReloc(pos, target, rkB, 4)
 
 proc emitBL*(dest: var Buffer; target: LabelId) =
   ## Emit BL instruction: BL target (branch with link)
   let pos = dest.data.getCurrentPosition()
   dest.data.addUint32(0x94000000'u32)  # Placeholder
-  when false:
-    dest.addReloc(pos, target, rkBL)
+  dest.addReloc(pos, target, rkBL, 4)
 
 proc emitBeq*(dest: var Buffer; target: LabelId) =
   ## Emit BEQ instruction: BEQ target (branch if equal)
   let pos = dest.data.getCurrentPosition()
   dest.data.addUint32(0x54000000'u32)  # Placeholder, condition=0000 (EQ)
-  when false:
-    dest.addReloc(pos, target, rkBEQ)
+  dest.addReloc(pos, target, rkBEQ, 4)
 
 proc emitBne*(dest: var Buffer; target: LabelId) =
   ## Emit BNE instruction: BNE target (branch if not equal)
   let pos = dest.data.getCurrentPosition()
   dest.data.addUint32(0x54000001'u32)  # Placeholder, condition=0001 (NE)
-  when false:
-    dest.addReloc(pos, target, rkBNE)
+  dest.addReloc(pos, target, rkBNE, 4)
 
 proc emitRet*(dest: var Bytes) =
   ## Emit RET instruction: RET (return, defaults to X30/LR)
@@ -337,46 +333,4 @@ proc emitLdp*(dest: var Bytes; rt1, rt2: Register; rn: Register; offset: int32) 
               (encodeReg(rn) shl 5) or
               encodeReg(rt1)
   dest.addUint32(instr)
-
-# Relocation handling
-proc updateRelocDisplacements*(buf: var Buffer) =
-  ## Update all relocation displacements based on current label positions
-  for reloc in buf.relocs:
-    let currentPos = reloc.position
-    let targetPos = buf.getLabelPosition(reloc.target)
-    let distance = targetPos - currentPos
-
-    # Calculate branch offset in instructions (divide by 4)
-    let offset = distance div 4
-
-  when false:
-    case reloc.kind
-    of rkB, rkBL:
-      # B/BL: 26-bit signed immediate
-      let imm26 = uint32(offset) and 0x03FFFFFF
-      let baseInstr = buf.data[currentPos]
-      let instr = (uint32(baseInstr) and 0xFC000000'u32) or imm26
-      buf.data[currentPos] = byte(instr and 0xFF)
-      buf.data[currentPos + 1] = byte((instr shr 8) and 0xFF)
-      buf.data[currentPos + 2] = byte((instr shr 16) and 0xFF)
-      buf.data[currentPos + 3] = byte((instr shr 24) and 0xFF)
-    of rkBEQ, rkBNE:
-      # Conditional branches: 19-bit signed immediate
-      let imm19 = uint32(offset) and 0x7FFFF
-      let baseInstr =
-        (uint32(buf.data[currentPos]) or
-         (uint32(buf.data[currentPos + 1]) shl 8) or
-         (uint32(buf.data[currentPos + 2]) shl 16) or
-         (uint32(buf.data[currentPos + 3]) shl 24))
-      let instr = (baseInstr and 0xFF00001F'u32) or (imm19 shl 5)
-      buf.data[currentPos] = byte(instr and 0xFF)
-      buf.data[currentPos + 1] = byte((instr shr 8) and 0xFF)
-      buf.data[currentPos + 2] = byte((instr shr 16) and 0xFF)
-      buf.data[currentPos + 3] = byte((instr shr 24) and 0xFF)
-    else:
-      discard  # Other relocation types not yet implemented
-
-proc finalize*(buf: var Buffer) =
-  ## Finalize the buffer by updating all relocations
-  buf.updateRelocDisplacements()
 
