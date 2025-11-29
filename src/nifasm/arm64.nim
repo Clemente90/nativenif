@@ -62,6 +62,33 @@ proc emitMovImm*(dest: var Bytes; rd: Register; imm: uint16) =
               encodeReg(rd)
   dest.addUint32(instr)
 
+# MOVK instruction (move with keep)
+proc emitMovK*(dest: var Bytes; rd: Register; imm: uint16; shift: uint8) =
+  ## Emit MOVK instruction: MOVK rd, #imm, LSL #shift
+  ## shift must be 0, 16, 32, or 48
+  # MOVK Xd, #imm, LSL #shift: 1111 0010 100i iiii iiii iiii iiid dddd
+  # The shift is encoded in bits 21-22: shift/16
+  let hw = (shift div 16) and 0x3
+  let instr = 0xF2800000'u32 or
+              (uint32(hw) shl 21) or
+              (uint32(imm) shl 5) or
+              encodeReg(rd)
+  dest.addUint32(instr)
+
+# Load a 64-bit immediate value using MOVZ + MOVK
+proc emitMovImm64*(dest: var Bytes; rd: Register; imm: uint64) =
+  ## Emit instructions to load a 64-bit immediate value into a register
+  ## Uses MOVZ for the first non-zero chunk and MOVK for subsequent chunks
+  var first = true
+  for shift in countup(0, 48, 16):
+    let chunk = uint16((imm shr shift) and 0xFFFF)
+    if chunk != 0 or first:
+      if first:
+        emitMovImm(dest, rd, chunk)
+        first = false
+      else:
+        emitMovK(dest, rd, chunk, uint8(shift))
+
 # ADD instruction - register + register
 proc emitAdd*(dest: var Bytes; rd, rn, rm: Register) =
   ## Emit ADD instruction: ADD rd, rn, rm

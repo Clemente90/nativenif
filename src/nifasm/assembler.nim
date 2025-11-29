@@ -1187,8 +1187,11 @@ proc genInstA64(n: var Cursor; ctx: var GenContext) =
       elif op.isImm:
         if op.immVal >= 0 and op.immVal <= 0xFFFF:
           arm64.emitMovImm(ctx.buf.data, dest.reg, uint16(op.immVal))
+        elif op.immVal >= 0:
+          # Use MOVZ + MOVK to load large immediate values
+          arm64.emitMovImm64(ctx.buf.data, dest.reg, uint64(op.immVal))
         else:
-          error("Immediate value too large for MOV (must fit in 16 bits)", n)
+          error("Immediate value out of range", n)
       elif op.isMem:
         arm64.emitLdr(ctx.buf.data, dest.reg, op.mem.base, op.mem.offset)
       else:
