@@ -17,6 +17,7 @@
 | `(result D L T)`       | NifasmDecl                  | result value declaration |
 | `(clobber ...)`        | NifasmDecl                  | clobbered registers list |
 | `(var D L T)`          | NifasmDecl                  | variable declaration |
+| `(arch x64/arm64)`     | NifasmDecl                  | architecture pragma |
 | `(s)`                  | X64Flag                 | stack slot location tag |
 | `(ssize)`              | NifasmExpr                  | stack size expression |
 | `(mov D S)`            | X64Inst, A64Inst         | move instruction |

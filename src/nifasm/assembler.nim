@@ -40,7 +40,8 @@ proc getStr(n: Cursor): string =
 
 proc parseRegister(n: var Cursor): Register =
   let regTag = tagToX64Reg(n.tag)
-  result = case regTag
+  result =
+    case regTag
     of RaxR, R0R: RAX
     of RcxR, R2R: RCX
     of RdxR, R3R: RDX
@@ -72,7 +73,8 @@ proc parseRegister(n: var Cursor): Register =
 proc tagToRegister(t: TagEnum): Register =
   ## Convert a TagEnum to a Register (for register binding tracking)
   let regTag = tagToX64Reg(t)
-  result = case regTag
+  result =
+    case regTag
     of RaxR, R0R: RAX
     of RcxR, R2R: RCX
     of RdxR, R3R: RDX
@@ -491,6 +493,23 @@ proc pass1Proc(n: var Cursor; scope: Scope; ctx: var GenContext) =
   let sym = Symbol(name: name, kind: skProc, sig: sig)
   scope.define(sym)
 
+proc skipParRi(n: var Cursor) {.inline.} =
+  if n.kind != ParRi: error("Expected )", n)
+  inc n
+
+proc handleArch(n: var Cursor; ctx: var GenContext) =
+  inc n
+  if n.kind != Ident: error("Expected architecture symbol", n)
+  let arch = pool.strings[n.litId]
+  if arch == "x64":
+    ctx.arch = Arch.X64
+  elif arch == "arm64":
+    ctx.arch = Arch.A64
+  else:
+    error("Unknown architecture: " & arch, n)
+  inc n
+  skipParRi n
+
 proc pass1(n: var Cursor; scope: Scope; ctx: var GenContext) =
   var n = n
   if n.kind == ParLe and n.tag == StmtsTagId:
@@ -513,8 +532,7 @@ proc pass1(n: var Cursor; scope: Scope; ctx: var GenContext) =
           else:
             let typ = parseType(n, scope, ctx)
             scope.define(Symbol(name: name, kind: skType, typ: typ))
-          if n.kind != ParRi: error("Expected ) at end of type decl", n)
-          inc n
+          skipParRi n
         of ProcTagId:
           # (proc :Name (params ...) (result ...) (clobber ...) (body ...))
           pass1Proc(n, scope, ctx)
@@ -546,6 +564,8 @@ proc pass1(n: var Cursor; scope: Scope; ctx: var GenContext) =
           scope.define(Symbol(name: name, kind: skTvar, typ: typ))
           n = start
           skip n
+        of ArchTagId:
+          handleArch(n, ctx)
         else:
           skip n
       else:
@@ -2379,6 +2399,8 @@ proc pass2(n: Cursor; ctx: var GenContext) =
           ctx.tlsOffset += size
 
           inc n # )
+        of ArchTagId:
+          handleArch(n, ctx)
         else:
           let instTag = tagToX64Inst(n.tag)
           if instTag != NoX64Inst or n.tag == IteTagId or n.tag == LoopTagId:
