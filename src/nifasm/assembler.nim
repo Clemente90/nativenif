@@ -2071,7 +2071,28 @@ proc genInstX64(n: var Cursor; ctx: var GenContext) =
   let instTag = tagToX64Inst(n.tag)
   let start = n
 
-  if instTag == CallX64:
+  if instTag == IatX64:
+    # (iat symbol) - Indirect call through IAT for external procs
+    inc n
+    if n.kind != Symbol: error("Expected proc symbol for iat", n)
+    let name = getSym(n)
+    let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
+    if sym == nil or sym.kind != skExtProc: error("iat requires external proc, got: " & name, n)
+    inc n
+    # Find the extproc to get its IAT slot
+    var iatSlot = -1
+    for i in 0..<ctx.extProcs.len:
+      if ctx.extProcs[i].name == name:
+        iatSlot = ctx.extProcs[i].gotSlot
+        break
+    if iatSlot == -1:
+      error("External proc not found: " & name, n)
+    # Emit indirect call through IAT using relocation system
+    ctx.buf.emitIatCall(iatSlot)
+    if n.kind != ParRi: error("Expected ) after iat", n)
+    inc n
+    return
+  elif instTag == CallX64:
     if ctx.inCall: error("Nested calls are not allowed", n)
     ctx.inCall = true
     defer: ctx.inCall = false
@@ -2080,31 +2101,9 @@ proc genInstX64(n: var Cursor; ctx: var GenContext) =
     if n.kind != Symbol: error("Expected proc symbol, got " & $n.kind, n)
     let name = getSym(n)
     let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
-    if sym == nil or sym.kind notin {skProc, skExtProc}: error("Unknown proc: " & name, n)
+    if sym == nil or sym.kind != skProc: error("Unknown proc: " & name & " (use 'iat' for external procs)", n)
     if sym.isForeign:
       error("Cannot call foreign proc '" & name & "' (must be linked)", n)
-    # Handle external proc calls (Windows uses indirect call through IAT)
-    if sym.kind == skExtProc:
-      inc n
-      # Skip argument handling - external procs use Windows calling convention
-      while n.kind == ParLe:
-        skip n
-      # Record the position of this CALL instruction for later patching
-      let callPos = ctx.buf.data.len
-      for i in 0..<ctx.extProcs.len:
-        if ctx.extProcs[i].name == name:
-          ctx.extProcs[i].callSites.add callPos
-          break
-      # Emit placeholder indirect call (will be patched to call [IAT_entry])
-      # For now emit a near call with placeholder
-      ctx.buf.data.add 0xE8'u8  # CALL rel32
-      ctx.buf.data.add 0x00'u8
-      ctx.buf.data.add 0x00'u8
-      ctx.buf.data.add 0x00'u8
-      ctx.buf.data.add 0x00'u8
-      if n.kind != ParRi: error("Expected ) after call", n)
-      inc n
-      return
     inc n
 
     # Parse arguments
@@ -3522,7 +3521,6 @@ proc writeMachO(a: var GenContext; outfile: string) =
 proc writeExe(a: var GenContext; outfile: string) =
   x86.finalize(a.buf)
   x86.finalize(a.bssBuf)
-  let code = a.buf.data
 
   # Determine machine type based on architecture
   let machine = case a.arch
@@ -3543,7 +3541,7 @@ proc writeExe(a: var GenContext; outfile: string) =
       libOrdinal: ext.libOrdinal, gotSlot: ext.gotSlot,
       callSites: ext.callSites)
 
-  exe.writePE(code, a.bssOffset, 0'u32, machine, outfile, dynlink)
+  exe.writePE(a.buf, a.bssOffset, 0'u32, machine, outfile, dynlink)
 
 proc createLiterals(data: openArray[(string, int)]): Literals =
   result = default(Literals)
@@ -3589,7 +3587,7 @@ proc assemble*(filename, outfile: string) =
   of Arch.A64:
     writeMachO(ctx, outfile)
   of Arch.WinX64, Arch.WinA64:
-    writeExe(ctx, outfile)
+    writeExe(ctx, outfile.changeFileExt("exe"))
 
   # Close all module streams
   for module in ctx.modules.mvalues:
