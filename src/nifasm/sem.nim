@@ -23,7 +23,7 @@ type
     want*, got*: Type
 
   SymKind* = enum
-    skUnknown, skType, skVar, skParam, skProc, skLabel, skRodata, skGvar, skTvar, skCfvar
+    skUnknown, skType, skVar, skParam, skProc, skLabel, skRodata, skGvar, skTvar, skCfvar, skExtProc
 
   Param* = object
     name*: string
@@ -55,6 +55,12 @@ type
     # Foreign module tracking
     isForeign*: bool  # True if this symbol comes from a foreign module
 
+    # External proc info (for skExtProc)
+    libName*: string  # Library name (e.g. "libSystem.B.dylib")
+    extName*: string  # External symbol name (e.g. "_write")
+    stubOffset*: int  # Offset into stub section
+    gotSlot*: int     # GOT slot index for this symbol
+
   Scope* = ref object
     parent*: Scope
     syms*: Table[string, Symbol]
@@ -80,7 +86,7 @@ proc asmAlignOf*(t: Type): int =
   case t.kind
   of ErrorT, VoidT: 1
   of BoolT: 1
-  of IntT, UIntT, FloatT: 
+  of IntT, UIntT, FloatT:
     let size = t.bits div 8
     # Alignment is typically the size, but capped at 8 for x86-64
     if size <= 8: size else: 8

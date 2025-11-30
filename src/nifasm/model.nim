@@ -155,6 +155,7 @@ type
     RetA64 = (ord(RetTagId), "ret")  ## return instruction
     NopA64 = (ord(NopTagId), "nop")  ## no operation
     SvcA64 = (ord(SvcTagId), "svc")  ## supervisor call (system call)
+    AdrA64 = (ord(AdrTagId), "adr")  ## load address of label
     LdrA64 = (ord(LdrTagId), "ldr")  ## load register
     StrA64 = (ord(StrTagId), "str")  ## store register
     StpA64 = (ord(StpTagId), "stp")  ## store pair
@@ -166,7 +167,7 @@ type
     KillA64 = (ord(KillTagId), "kill")  ## kill variable
 
 proc rawTagIsA64Inst*(raw: TagEnum): bool {.inline.} =
-  raw in {MovTagId, AddTagId, SubTagId, MulTagId, SdivTagId, UdivTagId, AndTagId, OrrTagId, EorTagId, LslTagId, LsrTagId, AsrTagId, NegTagId, CmpTagId, RetTagId, NopTagId, SvcTagId, LdrTagId, StrTagId, StpTagId, LdpTagId, BTagId, BlTagId, BeqTagId, BneTagId, KillTagId}
+  raw in {MovTagId, AddTagId, SubTagId, MulTagId, SdivTagId, UdivTagId, AndTagId, OrrTagId, EorTagId, LslTagId, LsrTagId, AsrTagId, NegTagId, CmpTagId, RetTagId, NopTagId, SvcTagId, AdrTagId, LdrTagId, StrTagId, StpTagId, LdpTagId, BTagId, BlTagId, BeqTagId, BneTagId, KillTagId}
 
 type
   NifasmType* = enum
@@ -200,9 +201,11 @@ type
     RodataD = (ord(RodataTagId), "rodata")  ## read-only data (string/bytes)
     GvarD = (ord(GvarTagId), "gvar")  ## global variable
     TvarD = (ord(TvarTagId), "tvar")  ## thread local variable
+    ImpD = (ord(ImpTagId), "imp")  ## import dynamic library
+    ExtprocD = (ord(ExtprocTagId), "extproc")  ## external proc from imported library
 
 proc rawTagIsNifasmDecl*(raw: TagEnum): bool {.inline.} =
-  raw in {TypeTagId, ProcTagId, ParamsTagId, ParamTagId, ResultTagId, ClobberTagId, VarTagId, ArchTagId, CfvarTagId, RodataTagId, GvarTagId, TvarTagId}
+  raw in {TypeTagId, ProcTagId, ParamsTagId, ParamTagId, ResultTagId, ClobberTagId, VarTagId, ArchTagId, CfvarTagId, RodataTagId, GvarTagId, TvarTagId, ImpTagId, ExtprocTagId}
 
 type
   NifasmExpr* = enum

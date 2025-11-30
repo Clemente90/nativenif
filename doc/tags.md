@@ -133,6 +133,7 @@
 | `(nop)`                | X64Inst, A64Inst         | no operation |
 | `(syscall)`            | X64Inst                  | system call |
 | `(svc N)`              | A64Inst                  | supervisor call (system call) |
+| `(adr D L)`            | A64Inst                  | load address of label |
 | `(ldr D S)`            | A64Inst                  | load register |
 | `(str D S)`            | A64Inst                  | store register |
 | `(stp D1 D2 S)`        | A64Inst                  | store pair |
@@ -153,6 +154,8 @@
 | `(rodata L S)`         | NifasmDecl                  | read-only data (string/bytes) |
 | `(gvar D L T)`         | NifasmDecl                  | global variable |
 | `(tvar D L T)`         | NifasmDecl                  | thread local variable |
+| `(imp S)`              | NifasmDecl                  | import dynamic library |
+| `(extproc D S)`        | NifasmDecl                  | external proc from imported library |
 | `(kill S)`             | X64Inst, A64Inst            | kill variable |
 | `(cast T E)`         | NifasmExpr                  | type cast |
 | `(lock I)`             | X64Inst                  | atomic lock prefix |

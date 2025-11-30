@@ -1,0 +1,6 @@
+(stmts
+  (arch arm64)
+  (mov (x16) +33554433)
+  (mov (x0) +42)
+  (svc +0)
+)
