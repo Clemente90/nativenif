@@ -201,9 +201,11 @@ type
     RodataD = (ord(RodataTagId), "rodata")  ## read-only data (string/bytes)
     GvarD = (ord(GvarTagId), "gvar")  ## global variable
     TvarD = (ord(TvarTagId), "tvar")  ## thread local variable
+    ImpD = (ord(ImpTagId), "imp")  ## import dynamic library
+    ExtprocD = (ord(ExtprocTagId), "extproc")  ## external proc from imported library
 
 proc rawTagIsNifasmDecl*(raw: TagEnum): bool {.inline.} =
-  raw in {TypeTagId, ProcTagId, ParamsTagId, ParamTagId, ResultTagId, ClobberTagId, VarTagId, ArchTagId, CfvarTagId, RodataTagId, GvarTagId, TvarTagId}
+  raw in {TypeTagId, ProcTagId, ParamsTagId, ParamTagId, ResultTagId, ClobberTagId, VarTagId, ArchTagId, CfvarTagId, RodataTagId, GvarTagId, TvarTagId, ImpTagId, ExtprocTagId}
 
 type
   NifasmExpr* = enum

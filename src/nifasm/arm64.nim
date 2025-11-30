@@ -341,6 +341,22 @@ proc emitAdr*(dest: var Buffer; rd: Register; target: LabelId) =
   dest.data.addUint32(0x10000000'u32 or encodeReg(rd))  # Placeholder
   dest.addReloc(pos, target, rkADR, 4)
 
+# ADRP instruction (load page address)
+proc emitAdrp*(dest: var Buffer; rd: Register; target: LabelId) =
+  ## Emit ADRP instruction: ADRP rd, target (load page address of label)
+  # ADRP Xd, label: 1001 0000 00ii iiii iiii iiii iiii dddd
+  # The immediate will be patched later via relocation
+  let pos = dest.data.getCurrentPosition()
+  dest.data.addUint32(0x90000000'u32 or encodeReg(rd))  # Placeholder
+  dest.addReloc(pos, target, rkADRP, 4)
+
+# BR instruction (branch to register)
+proc emitBr*(dest: var Bytes; rn: Register) =
+  ## Emit BR instruction: BR rn (unconditional branch to address in register)
+  # BR Xn: 1101 0110 0001 1111 0000 00nn nnn0 0000
+  let instr = 0xD61F0000'u32 or (encodeReg(rn) shl 5)
+  dest.addUint32(instr)
+
 # Stack operations
 proc emitStp*(dest: var Bytes; rt1, rt2: Register; rn: Register; offset: int32) =
   ## Emit STP instruction: STP rt1, rt2, [rn, #offset]! (pre-index)

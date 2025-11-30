@@ -154,6 +154,8 @@
 | `(rodata L S)`         | NifasmDecl                  | read-only data (string/bytes) |
 | `(gvar D L T)`         | NifasmDecl                  | global variable |
 | `(tvar D L T)`         | NifasmDecl                  | thread local variable |
+| `(imp S)`              | NifasmDecl                  | import dynamic library |
+| `(extproc D S)`        | NifasmDecl                  | external proc from imported library |
 | `(kill S)`             | X64Inst, A64Inst            | kill variable |
 | `(cast T E)`         | NifasmExpr                  | type cast |
 | `(lock I)`             | X64Inst                  | atomic lock prefix |

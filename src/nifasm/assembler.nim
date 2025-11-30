@@ -122,6 +122,18 @@ type
     X64
     A64
 
+  ImportedLib = object
+    name: string     # Library path (e.g. "/usr/lib/libSystem.B.dylib")
+    ordinal: int     # Library ordinal (1-based index)
+
+  ExtProcInfo = object
+    name: string     # Internal name
+    extName: string  # External symbol name (e.g. "_write")
+    libOrdinal: int  # Which library (1-based)
+    gotSlot: int     # GOT slot index
+    stubOffset: int  # Offset in stub section
+    callSites: seq[int]  # Positions of BL instructions that call this proc
+
   GenContext = object
     scope: Scope
     buf: x86.Buffer  # Code buffer (.text section) for x64
@@ -137,6 +149,10 @@ type
     modules: Table[string, LoadedModule]  # Cache of loaded foreign modules
     baseDir: string  # Base directory for finding module files
     regBindings: Table[x86.Register, string]  # Maps registers to variable names they're bound to (x64 only)
+    # Dynamic linking
+    imports: seq[ImportedLib]  # Imported libraries
+    extProcs: seq[ExtProcInfo]  # External procs to bind
+    gotSlotCount: int  # Number of GOT slots allocated
 
   Operand = object
     reg: x86.Register
@@ -593,6 +609,43 @@ proc pass1(n: var Cursor; scope: Scope; ctx: var GenContext) =
           skip n
         of ArchTagId:
           handleArch(n, ctx)
+        of ImpTagId:
+          # (imp "libpath")
+          inc n
+          if n.kind != StringLit: error("Expected library path string", n)
+          let libPath = getStr(n)
+          inc n
+          # Add to imports list if not already there
+          var found = false
+          for lib in ctx.imports:
+            if lib.name == libPath:
+              found = true
+              break
+          if not found:
+            ctx.imports.add ImportedLib(name: libPath, ordinal: ctx.imports.len + 1)
+          skipParRi n
+        of ExtprocTagId:
+          # (extproc :name "external_name")
+          inc n
+          if n.kind != SymbolDef: error("Expected extproc name", n)
+          let name = getSym(n)
+          inc n
+          if n.kind != StringLit: error("Expected external symbol name string", n)
+          let extName = getStr(n)
+          inc n
+          # Find the library (use last imported library, or default to libSystem)
+          var libOrdinal = 1
+          if ctx.imports.len > 0:
+            libOrdinal = ctx.imports[^1].ordinal
+          # Allocate GOT slot
+          let gotSlot = ctx.gotSlotCount
+          ctx.gotSlotCount += 1
+          # Create symbol
+          let sym = Symbol(name: name, kind: skExtProc, extName: extName, libName: "", gotSlot: gotSlot)
+          scope.define(sym)
+          # Track for code generation
+          ctx.extProcs.add ExtProcInfo(name: name, extName: extName, libOrdinal: libOrdinal, gotSlot: gotSlot, stubOffset: -1)
+          skipParRi n
         else:
           skip n
       else:
@@ -981,12 +1034,30 @@ proc genInstA64(n: var Cursor; ctx: var GenContext) =
     ctx.inCall = true
     defer: ctx.inCall = false
     inc n
-    if n.kind != Symbol: error("Expected proc symbol", n)
-    let name = getSym(n)
+    if n.kind notin {Symbol, Ident}: error("Expected proc symbol, got " & $n.kind, n)
+    let name = if n.kind == Ident: pool.strings[n.litId] else: getSym(n)
     let sym = lookupWithAutoImport(ctx, ctx.scope, name, n)
-    if sym == nil or sym.kind != skProc: error("Unknown proc: " & name, n)
+    if sym == nil or sym.kind notin {skProc, skExtProc}: error("Unknown proc: " & name, n)
     if sym.isForeign:
       error("Cannot call foreign proc '" & name & "' (must be linked)", n)
+    # Handle external proc calls differently
+    if sym.kind == skExtProc:
+      inc n
+      # Skip argument handling for now - external procs use standard ABI
+      while n.kind == ParLe:
+        skip n
+      # Record the position of this BL instruction for later patching
+      let callPos = ctx.buf.data.len
+      # Find the extproc info and add this call site
+      for i in 0..<ctx.extProcs.len:
+        if ctx.extProcs[i].name == name:
+          ctx.extProcs[i].callSites.add callPos
+          break
+      # Emit placeholder BL (will be patched to point to stub)
+      ctx.buf.data.addUint32(0x94000000'u32)  # BL placeholder
+      if n.kind != ParRi: error("Expected ) after call", n)
+      inc n
+      return
     inc n
     var args: Table[string, OperandA64]
     while n.kind == ParLe:
@@ -3296,6 +3367,9 @@ proc pass2(n: Cursor; ctx: var GenContext) =
           inc n # )
         of ArchTagId:
           handleArch(n, ctx)
+        of ImpTagId, ExtprocTagId:
+          # Already handled in pass1, skip
+          skip n
         else:
           genInst(n, ctx)
       else:
@@ -3383,7 +3457,17 @@ proc writeMachO(a: var GenContext; outfile: string) =
     of Arch.A64:
       (CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL)
 
-  macho.writeMachO(code, a.bssOffset, entryAddr, cputype, cpusubtype, outfile)
+  # Build dynlink info for external procs
+  var dynlink: macho.DynLinkInfo
+  for lib in a.imports:
+    dynlink.libs.add macho.ImportedLibInfo(name: lib.name, ordinal: lib.ordinal)
+  for ext in a.extProcs:
+    dynlink.extProcs.add macho.ExternalProcInfo(
+      name: ext.name, extName: ext.extName,
+      libOrdinal: ext.libOrdinal, gotSlot: ext.gotSlot,
+      callSites: ext.callSites)
+
+  macho.writeMachO(code, a.bssOffset, entryAddr, cputype, cpusubtype, outfile, dynlink)
 
   # macOS arm64 requires code signing for all executables
   when defined(macosx):
@@ -3415,7 +3499,10 @@ proc assemble*(filename, outfile: string) =
     tlsOffset: 0,
     bssOffset: 0,
     modules: initTable[string, LoadedModule](),
-    baseDir: baseDir
+    baseDir: baseDir,
+    imports: @[],
+    extProcs: @[],
+    gotSlotCount: 0
   )
 
   var n1 = n
