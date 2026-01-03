@@ -59,7 +59,7 @@ proc getInt(n: Cursor): int64 =
 
 proc getSym(n: Cursor): string =
   case n.kind
-  of Symbol, SymbolDef:
+  of Symbol:
     result = pool.syms[n.symId]
   else:
     error("Expected symbol", n)
